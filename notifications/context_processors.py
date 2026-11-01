@@ -1,5 +1,7 @@
 from django.utils import timezone
 
+from learning import workspaces
+
 from .models import Notification
 
 
@@ -16,7 +18,8 @@ def notifications(request):
         ensure_reminders(user)
         request.session["reminders_checked"] = today
 
-    mine = Notification.objects.filter(recipient=user)
+    # Only this workspace's notifications (plus shared ones); the other workspace's wait until the user switches.
+    mine = workspaces.without_hidden_links(request, Notification.objects.filter(recipient=user))
     return {
         "notif_unread": mine.filter(is_read=False).count(),
         "notif_recent": list(mine[:8]),

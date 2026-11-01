@@ -9,6 +9,8 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from notifications.models import Notification
+
 from .roles import DEFAULT_ROLES
 
 
@@ -24,6 +26,75 @@ class HomeTests(TestCase):
     def test_admin_login_uses_sts_sign_in_page(self):
         response = self.client.get("/admin/login/?next=/admin/hr/")
         self.assertRedirects(response, f"{reverse('login')}?next=/admin/hr/", fetch_redirect_response=False)
+
+
+class WorkspaceTests(TestCase):
+    def make_user(self, *codenames):
+        user = get_user_model().objects.create_user("staff", password="Pw-12345!", is_staff=True)
+        user.user_permissions.set(Permission.objects.filter(codename__in=codenames))
+        return user
+
+    def test_sign_in_with_both_workspaces_shows_the_picker(self):
+        self.make_user("view_question", "view_employee")
+        response = self.client.post(reverse("login"), {"username": "staff", "password": "Pw-12345!"}, follow=True)
+        self.assertContains(response, "Choose a workspace")
+
+    def test_picking_hr_makes_it_the_dashboard(self):
+        self.client.force_login(self.make_user("view_question", "view_employee"))
+        hr_url = reverse("admin:app_list", args=["hr"])
+        self.assertRedirects(self.client.get(reverse("switch_workspace", args=["hr"])), hr_url)
+        self.assertRedirects(self.client.get(reverse("admin:index")), hr_url)
+
+    def test_picking_academic_shows_the_academic_dashboard(self):
+        self.client.force_login(self.make_user("view_question", "view_employee"))
+        self.client.get(reverse("switch_workspace", args=["academic"]))
+        self.assertContains(self.client.get(reverse("admin:index")), "Academic workspace")
+
+    def test_one_workspace_skips_the_picker(self):
+        self.client.force_login(self.make_user("view_employee"))
+        self.assertRedirects(self.client.get(reverse("choose_workspace")), reverse("admin:app_list", args=["hr"]))
+
+    def test_cannot_switch_to_a_workspace_without_access(self):
+        self.client.force_login(self.make_user("view_question"))
+        self.assertEqual(self.client.get(reverse("switch_workspace", args=["hr"])).status_code, 404)
+
+    def test_picker_shows_only_available_workspaces(self):
+        self.client.force_login(self.make_user("view_question", "view_employee"))
+        response = self.client.get(reverse("choose_workspace"))
+        self.assertContains(response, reverse("switch_workspace", args=["hr"]))
+        self.assertContains(response, reverse("switch_workspace", args=["academic"]))
+
+    def test_academic_workspace_shows_nothing_of_hr(self):
+        user = self.make_user("view_question", "view_employee", "view_subject")
+        Notification.objects.create(recipient=user, title="Leave approved", url="/admin/hr/leaverequest/1/change/")
+        Notification.objects.create(recipient=user, title="Blueprint due", url="/admin/questionbank/questionblueprint/1/change/")
+        self.client.force_login(user)
+        self.client.get(reverse("switch_workspace", args=["academic"]))
+        response = self.client.get(reverse("admin:questionbank_subject_changelist"))
+        self.assertNotContains(response, reverse("admin:hr_employee_changelist"))
+        self.assertNotContains(response, "Leave approved")
+        self.assertContains(response, "Blueprint due")
+        self.assertEqual(self.client.get(reverse("notifications:feed")).json()["unread"], 1)
+
+    def test_hr_workspace_shows_nothing_of_academic(self):
+        self.client.force_login(self.make_user("view_question", "view_employee"))
+        self.client.get(reverse("switch_workspace", args=["hr"]))
+        response = self.client.get(reverse("admin:hr_employee_changelist"))
+        self.assertNotContains(response, reverse("admin:questionbank_question_changelist"))
+        self.assertContains(response, f'class="ws-bar__switch" href="{reverse("choose_workspace")}"')
+
+    def test_opening_a_page_of_the_other_workspace_moves_you_there(self):
+        self.client.force_login(self.make_user("view_question", "view_employee"))
+        self.client.get(reverse("switch_workspace", args=["academic"]))
+        self.client.get(reverse("admin:hr_employee_changelist"))
+        self.assertRedirects(self.client.get(reverse("admin:index")), reverse("admin:app_list", args=["hr"]))
+
+    def test_new_sign_in_asks_again(self):
+        self.make_user("view_question", "view_employee")
+        self.client.login(username="staff", password="Pw-12345!")
+        self.client.get(reverse("switch_workspace", args=["hr"]))
+        self.client.post(reverse("login"), {"username": "staff", "password": "Pw-12345!"})
+        self.assertRedirects(self.client.get(reverse("admin:index")), reverse("choose_workspace"))
 
 
 @override_settings(MAKE_WEBHOOK_URL="", MAKE_MAILHOOK_ADDRESS="")

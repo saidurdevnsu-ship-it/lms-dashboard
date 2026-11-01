@@ -23,7 +23,7 @@
     <div>
       <p class="dash-hero__eyebrow">{% now "l, j F Y" %}</p>
       <h1 id="dash-title">Welcome back, {{ display_name }}</h1>
-      <p class="dash-hero__sub">Here's what's happening across your learning and people workspace.</p>
+      <p class="dash-hero__sub">Here's what's happening in your academic workspace.</p>
     </div>
     {% if perms.questionbank.add_question %}
     <a class="dash-btn dash-btn--primary" href="{% url 'admin:questionbank_question_generate' %}">
@@ -33,7 +33,8 @@
     {% endif %}
   </section>
 
-  {% punch_button %}
+  {% comment %}Punching in lives in HR; only people who can't open HR punch in here.{% endcomment %}
+  {% if not perms.hr %}{% punch_button %}{% endif %}
 
   {% if stats %}
   <section class="dash-stats" aria-label="Summary">
@@ -100,7 +101,7 @@
       <section class="panel" aria-labelledby="workspace-title">
         <header class="panel__head">
           <h2 id="workspace-title">Academic workspace</h2>
-          <p>Question bank, blueprints and the academic calendar. Staff, roles and HR are under the HR tab.</p>
+          <p>Question bank, blueprints, final papers and the academic calendar.</p>
         </header>
         {% if app_list %}
         <div class="apps">

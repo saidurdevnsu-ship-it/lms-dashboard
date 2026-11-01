@@ -1,7 +1,11 @@
+from django.contrib import admin
+from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import logout
 from django.contrib.auth.views import LoginView
-from django.shortcuts import redirect
+from django.http import Http404
+from django.shortcuts import redirect, render
 
+from . import workspaces
 from .forms import SignInForm
 
 
@@ -22,6 +26,38 @@ class RememberMeLoginView(LoginView):
 
     def form_valid(self, form):
         response = super().form_valid(form)
+        # Every sign-in starts at the workspace picker.
+        self.request.session.pop(workspaces.SESSION_KEY, None)
         if not self.request.POST.get("remember_me"):
             self.request.session.set_expiry(0)
         return response
+
+
+def dashboard(request):
+    """/admin/: the dashboard of the workspace picked after sign-in, or the picker if none is picked yet."""
+    if request.user.is_active and request.user.is_staff:
+        available = workspaces.available(request.user)
+        ws = workspaces.current(request)
+        if ws not in available and len(available) > 1:
+            return redirect("choose_workspace")
+        if ws == "hr" and "hr" in available or available == ["hr"]:
+            return redirect(workspaces.home_url("hr"))
+    return admin.site.admin_view(admin.site.index)(request)
+
+
+@staff_member_required
+def choose_workspace(request):
+    """After sign-in: pick a workspace. Someone with only one goes straight there."""
+    available = workspaces.available(request.user)
+    if len(available) <= 1:
+        return switch_workspace(request, available[0] if available else "academic")
+    choices = [{"name": name, "label": workspaces.LABELS[name]} for name in available]
+    return render(request, "registration/workspace.html", {"choices": choices, "current": workspaces.current(request)})
+
+
+@staff_member_required
+def switch_workspace(request, name):
+    if name not in workspaces.LABELS or (name not in workspaces.available(request.user) and name != "academic"):
+        raise Http404
+    request.session[workspaces.SESSION_KEY] = name
+    return redirect(workspaces.home_url(name))

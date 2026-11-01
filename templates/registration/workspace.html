@@ -1,0 +1,54 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Choose a workspace · STS LMS</title>
+  <link rel="preload" href="{% static 'fonts/inter-latin-wght-normal.woff2' %}" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{% static 'css/login.css' %}?v=2">
+</head>
+<body class="picker-body">
+  {% firstof user.get_short_name user.get_username as display_name %}
+  <header class="picker__top">
+    <div class="logo">
+      <span class="logo__mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6M9 9h1"/></svg>
+      </span>
+      <span class="logo__name">STS LMS &amp; HR</span>
+    </div>
+    <form method="post" action="{% url 'logout' %}">
+      {% csrf_token %}
+      <button type="submit" class="link link--button">Sign out</button>
+    </form>
+  </header>
+
+  <main class="picker">
+    <h1 class="picker__title">Hi {{ display_name }}, where to today?</h1>
+    <p class="picker__sub">Pick a workspace to open.</p>
+
+    <ul class="picker__list">
+      {% for ws in choices %}
+      <li style="--i: {{ forloop.counter0 }}">
+        <a class="ws-card ws-card--{{ ws.name }}" href="{% url 'switch_workspace' ws.name %}">
+          <span class="ws-card__icon" aria-hidden="true">
+            {% if ws.name == "hr" %}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 20a6.5 6.5 0 0 0-3-5.5"/></svg>
+            {% else %}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 9 12 4 2 9l10 5 10-5Z"/><path d="M6 11v5c3 2 9 2 12 0v-5"/></svg>
+            {% endif %}
+          </span>
+          <span class="ws-card__name">{{ ws.label }}</span>
+          <span class="ws-card__desc">
+            {% if ws.name == "hr" %}Attendance, leave, employees, holidays, users and roles.{% else %}Question bank, blueprints, final papers, books and the academic calendar.{% endif %}
+          </span>
+          <span class="ws-card__go">
+            Open {{ ws.label }}{% if ws.name == current %} · last used{% endif %}
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg>
+          </span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </main>
+</body>
+</html>

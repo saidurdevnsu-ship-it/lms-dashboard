@@ -181,6 +181,7 @@ class PunchButtonTests(HRTestCase):
 
     def test_no_button_without_an_employee_profile(self):
         self.client.force_login(self.hr)
+        self.client.get(reverse("switch_workspace", args=["academic"]))
         self.assertNotContains(self.client.get(reverse("admin:index")), "punch__btn")
 
     def test_hr_page_uses_the_same_button(self):

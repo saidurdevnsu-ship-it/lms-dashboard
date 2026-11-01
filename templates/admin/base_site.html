@@ -5,7 +5,7 @@
 
 {% block extrastyle %}
 <link rel="preload" href="{% static 'fonts/inter-latin-wght-normal.woff2' %}" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="{% static 'css/admin-theme.css' %}">
+<link rel="stylesheet" href="{% static 'css/admin-theme.css' %}?v=2">
 {% endblock %}
 
 {% block extrahead %}
@@ -63,17 +63,27 @@
 
 {% block header %}
 {{ block.super }}
-{% if has_permission and not is_popup and perms.hr %}
-{% url 'admin:app_list' app_label='hr' as hr_url %}{% url 'admin:app_list' app_label='auth' as auth_url %}
-<nav class="sts-tabs" aria-label="Workspaces">
-  <a class="sts-tab{% if hr_url not in request.path and auth_url not in request.path %} is-active{% endif %}" href="{% url 'admin:index' %}"{% if hr_url not in request.path and auth_url not in request.path %} aria-current="page"{% endif %}>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 9 12 4 2 9l10 5 10-5Z"/><path d="M6 11v5c3 2 9 2 12 0v-5"/></svg>
-    Academic
+{% if has_permission and not is_popup and workspace %}
+<nav class="ws-bar ws-bar--{{ workspace }}" aria-label="Workspace">
+  <a class="ws-bar__current" href="{% url 'admin:index' %}" title="Go to the {{ workspace_label }} dashboard">
+    <span class="ws-bar__tile" aria-hidden="true">
+      {% if workspace == "hr" %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 20a6.5 6.5 0 0 0-3-5.5"/></svg>
+      {% else %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 9 12 4 2 9l10 5 10-5Z"/><path d="M6 11v5c3 2 9 2 12 0v-5"/></svg>
+      {% endif %}
+    </span>
+    <span class="ws-bar__text">
+      <span class="ws-bar__name">{{ workspace_label }}</span>
+      <span class="ws-bar__desc">{% if workspace == "hr" %}Attendance, leave and people{% else %}Question bank, papers and calendar{% endif %}</span>
+    </span>
   </a>
-  <a class="sts-tab{% if hr_url in request.path or auth_url in request.path %} is-active{% endif %}" href="{{ hr_url }}"{% if hr_url in request.path or auth_url in request.path %} aria-current="page"{% endif %}>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 20a6.5 6.5 0 0 0-3-5.5"/></svg>
-    HR
+  {% if workspace_can_switch %}
+  <a class="ws-bar__switch" href="{% url 'choose_workspace' %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3l4 4-4 4"/><path d="M20 7H4"/><path d="M8 21l-4-4 4-4"/><path d="M4 17h16"/></svg>
+    <span>Switch<span class="ws-bar__long"> workspace</span></span>
   </a>
+  {% endif %}
 </nav>
 {% endif %}
 {% endblock %}

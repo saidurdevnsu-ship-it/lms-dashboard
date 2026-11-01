@@ -9,13 +9,15 @@ from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
+from learning import workspaces
+
 from .models import Notification
 
 
 @staff_member_required
 def feed(request):
     """Unread count and the latest few notifications, polled by the header bell."""
-    mine = Notification.objects.filter(recipient=request.user)
+    mine = workspaces.without_hidden_links(request, Notification.objects.filter(recipient=request.user))
     items = [
         {
             "id": n.id,
