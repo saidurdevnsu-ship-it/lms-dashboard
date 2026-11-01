@@ -13,55 +13,24 @@
 
     <!-- Branding panel (desktop) -->
     <aside class="brand-panel" aria-label="About STS LMS">
-      <svg class="brand-panel__art" aria-hidden="true" preserveAspectRatio="xMidYMid slice" viewBox="0 0 800 800">
-        <defs>
-          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path d="M40 0H0V40" fill="none" stroke="white" stroke-opacity="0.05" stroke-width="1"/>
-          </pattern>
-          <linearGradient id="fade" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="white" stop-opacity="0.18"/>
-            <stop offset="1" stop-color="white" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        <rect width="800" height="800" fill="url(#grid)"/>
-        <circle cx="680" cy="120" r="220" fill="none" stroke="url(#fade)" stroke-width="1.5"/>
-        <circle cx="680" cy="120" r="150" fill="none" stroke="url(#fade)" stroke-width="1.5"/>
-        <circle cx="680" cy="120" r="80" fill="url(#fade)" fill-opacity="0.3"/>
-        <polygon points="60,700 260,560 360,780" fill="url(#fade)" fill-opacity="0.5"/>
-        <rect x="420" y="520" width="180" height="180" rx="24" transform="rotate(18 510 610)" fill="none" stroke="url(#fade)" stroke-width="1.5"/>
-      </svg>
-
-      <div class="brand-panel__section">
-        <div class="logo">
-          <span class="logo__mark">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
-          </span>
-          <span class="logo__name">STS LMS</span>
-        </div>
+      <div class="logo">
+        <span class="logo__mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6M9 9h1"/></svg>
+        </span>
+        <span class="logo__name">STS LMS &amp; HR</span>
       </div>
 
       <div class="brand-panel__body">
-        <span class="pill">People &amp; Learning Hub</span>
-        <h1>Your people and their growth, in one place.</h1>
-        <p class="brand-panel__lead">Courses, staff records and progress reports, in one secure workspace for your team.</p>
-        <ul class="features">
-          <li>
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" clip-rule="evenodd"/></svg>
-            <span>Learning paths, course enrolment and completion tracking</span>
-          </li>
-          <li>
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" clip-rule="evenodd"/></svg>
-            <span>Employee records, roles and HR workflows</span>
-          </li>
-          <li>
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" clip-rule="evenodd"/></svg>
-            <span>Reports and dashboards for team leads</span>
-          </li>
-        </ul>
+        <h1>Curriculum-aligned exam papers, prepared securely.</h1>
+        <p class="brand-panel__lead">Blueprints, approvals, confidential papers and staff records for your school, in one place.</p>
       </div>
 
-      <div class="brand-panel__section brand-panel__footer">
-        &copy; {% now "Y" %} STS. Internal use only.
+      <div class="workspaces">
+        <p class="workspaces__label">Two workspaces, one sign-in</p>
+        <ul class="workspaces__list">
+          <li class="workspace-chip">Academic</li>
+          <li class="workspace-chip">HR</li>
+        </ul>
       </div>
     </aside>
 
@@ -71,10 +40,10 @@
 
         <div class="mobile-logo">
           <span class="logo__mark">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6M9 9h1"/></svg>
           </span>
           <div>
-            <p class="mobile-logo__name">STS LMS</p>
+            <p class="mobile-logo__name">STS LMS &amp; HR</p>
             <p class="mobile-logo__tag">People &amp; Learning Hub</p>
           </div>
         </div>
@@ -144,8 +113,8 @@
             </div>
 
             <div class="check">
-              <input id="remember_me" name="remember_me" type="checkbox" value="1" checked>
-              <label for="remember_me">Keep me signed in</label>
+              <input id="remember_me" name="remember_me" type="checkbox" value="1">
+              <label for="remember_me">Keep me signed in on this device</label>
             </div>
 
             <button type="submit" id="submit-btn" class="btn btn--primary">
@@ -166,9 +135,9 @@
             Sign in with Corporate SSO
           </a>
           {% endif %}
-        </div>
 
-        <p class="help">Trouble signing in? Contact your HR or IT administrator.</p>
+          <p class="help">Trouble signing in? Contact your system administrator.</p>
+        </div>
       </div>
     </main>
   </div>
