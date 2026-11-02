@@ -9,3 +9,7 @@ media/
 .vscode/
 backups/
 .idea/
+
+# Local only: agent plans, and security reviews (the repo is public)
+.hermes/
+docs/security-review-*.md
