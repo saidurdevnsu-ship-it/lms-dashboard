@@ -1,0 +1,119 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-dashboard.css' %}?v=2">{% endblock %}
+
+{% block bodyclass %}{{ block.super }} sts-dashboard{% endblock %}
+
+{% block breadcrumbs %}
+<ol class="breadcrumbs">
+  <li><a href="{% url 'admin:index' %}">Home</a></li>
+  <li aria-current="page">My profile</li>
+</ol>
+{% endblock %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+{% firstof user.get_full_name user.get_username as display_name %}
+<div class="dash profile">
+
+  <section class="profile-hero" aria-labelledby="profile-title">
+    <span class="profile-hero__avatar" aria-hidden="true">{{ display_name|slice:":1"|upper }}</span>
+    <div>
+      <h1 id="profile-title">{{ display_name }}</h1>
+      <p class="dash-hero__sub">
+        {% if employee %}{{ employee.designation }}, {{ employee.department }}{% else %}Signed in as {{ user.get_username }}{% endif %}
+      </p>
+    </div>
+  </section>
+
+  <div class="dash-grid">
+    <div class="dash-main">
+      <form method="post" class="panel" novalidate aria-labelledby="details-title">
+        {% csrf_token %}
+        <header class="panel__head">
+          <h2 id="details-title">Your details</h2>
+          <p>Keep these up to date: password resets and notifications go to your email.</p>
+        </header>
+
+        {% if form.non_field_errors %}
+        <div class="profile-alert" role="alert">{% for e in form.non_field_errors %}<p>{{ e }}</p>{% endfor %}</div>
+        {% endif %}
+
+        <div class="profile-fields">
+          {% for field in form %}{% if field.name != "current_password" %}
+          <div class="profile-field{% if field.name == 'email' %} profile-field--wide{% endif %}">
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% for e in field.errors %}<p class="profile-error">{{ e }}</p>{% endfor %}
+          </div>
+          {% endif %}{% endfor %}
+
+          {% if contact_form %}{% for field in contact_form %}
+          <div class="profile-field{% if field.name == 'address' %} profile-field--wide{% endif %}">
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% for e in field.errors %}<p class="profile-error">{{ e }}</p>{% endfor %}
+          </div>
+          {% endfor %}{% endif %}
+
+          <div class="profile-field profile-field--wide profile-confirm{% if not form.current_password.errors %} is-hidden{% endif %}" id="confirm-field">
+            <label for="{{ form.current_password.id_for_label }}">Current password</label>
+            {{ form.current_password }}
+            <p class="profile-help">You're changing your email. Confirm it's you with your current password.</p>
+            {% for e in form.current_password.errors %}<p class="profile-error">{{ e }}</p>{% endfor %}
+          </div>
+        </div>
+
+        <footer class="profile-actions">
+          <button type="submit" class="dash-btn dash-btn--primary profile-save">Save changes</button>
+        </footer>
+      </form>
+    </div>
+
+    <aside class="dash-side">
+      <section class="panel" aria-labelledby="account-title">
+        <header class="panel__head"><h2 id="account-title">Account</h2></header>
+        <dl class="profile-facts">
+          <div><dt>Username</dt><dd>{{ user.get_username }}</dd></div>
+          <div><dt>Roles</dt><dd>{% for r in roles %}<span class="profile-role">{{ r.name }}</span>{% empty %}{% if user.is_superuser %}<span class="profile-role">Super admin</span>{% else %}None yet{% endif %}{% endfor %}</dd></div>
+          <div><dt>Member since</dt><dd>{{ user.date_joined|date:"j F Y" }}</dd></div>
+        </dl>
+        {% if user.has_usable_password %}
+        <a class="profile-link" href="{% url 'admin:password_change' %}">Change my password</a>
+        {% endif %}
+      </section>
+
+      {% if employee %}
+      <section class="panel" aria-labelledby="job-title">
+        <header class="panel__head">
+          <h2 id="job-title">Job details</h2>
+          <p>Kept by HR. Ask HR if something here is wrong.</p>
+        </header>
+        <dl class="profile-facts">
+          <div><dt>Employee ID</dt><dd>{{ employee.employee_id }}</dd></div>
+          <div><dt>Department</dt><dd>{{ employee.department }}</dd></div>
+          <div><dt>Designation</dt><dd>{{ employee.designation }}</dd></div>
+          {% if employee.reports_to %}<div><dt>Reports to</dt><dd>{{ employee.reports_to.full_name }}</dd></div>{% endif %}
+          <div><dt>Joined</dt><dd>{{ employee.joining_date|date:"j F Y" }}</dd></div>
+        </dl>
+      </section>
+      {% endif %}
+    </aside>
+  </div>
+</div>
+
+<script>
+  // Ask for the current password only once the email actually changes.
+  (function () {
+    var email = document.getElementById("{{ form.email.id_for_label }}");
+    var confirm = document.getElementById("confirm-field");
+    if (!email || !confirm) return;
+    var original = email.defaultValue.trim().toLowerCase();
+    email.addEventListener("input", function () {
+      confirm.classList.toggle("is-hidden", email.value.trim().toLowerCase() === original);
+    });
+  })();
+</script>
+{% endblock %}

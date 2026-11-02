@@ -1,6 +1,5 @@
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
 
 
 class Notification(models.Model):
@@ -17,16 +16,16 @@ class Notification(models.Model):
     body = models.CharField(max_length=300, blank=True)
     url = models.CharField(max_length=300, blank=True)
     is_read = models.BooleanField(default=False)
-    # Lets reminders be sent once per (recipient, key), e.g. "paper-due:12:3d".
-    dedupe_key = models.CharField(max_length=100, blank=True)
+    # Lets reminders be sent once per (recipient, key), e.g. "paper-due:12:3d". NULL (not "") when there's no key:
+    # NULLs never clash in a unique constraint, so this works on MySQL, which has no conditional unique constraints.
+    dedupe_key = models.CharField(max_length=100, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["recipient", "is_read"])]
         constraints = [
-            models.UniqueConstraint(fields=["recipient", "dedupe_key"], condition=~Q(dedupe_key=""),
-                                    name="notification_once_per_key"),
+            models.UniqueConstraint(fields=["recipient", "dedupe_key"], name="notification_once_per_key"),
         ]
 
     def __str__(self):

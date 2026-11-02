@@ -115,12 +115,36 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# MySQL (8.4 or newer) once DB_NAME is set in .env; otherwise the local SQLite file.
+if os.environ.get('DB_NAME'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ['DB_NAME'],
+            'USER': os.environ.get('DB_USER', ''),
+            'PASSWORD': os.environ.get('DB_PASSWORD', ''),
+            'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
+            'PORT': os.environ.get('DB_PORT', '3306'),
+            'OPTIONS': {
+                # utf8mb4 stores all of Unicode, Bangla and emoji included.
+                'charset': 'utf8mb4',
+                # Django's recommendation for MySQL; the default (repeatable read) can hide rows other requests commit.
+                'isolation_level': 'read committed',
+                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            },
+            'TEST': {'CHARSET': 'utf8mb4', 'COLLATION': 'utf8mb4_0900_ai_ci'},
+        }
     }
-}
+    # MySQL has no conditional unique constraints. The one on SubjectAssignment (one "all grades" assignment per
+    # user and subject) is still enforced by form validation in the admin, where assignments are made.
+    SILENCED_SYSTEM_CHECKS = ['models.W036']
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation

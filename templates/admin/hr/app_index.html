@@ -1,7 +1,7 @@
 {% extends "admin/base_site.html" %}
 {% load static hr_tags %}
 
-{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-dashboard.css' %}"><link rel="stylesheet" href="{% static 'css/admin-hr.css' %}"><link rel="stylesheet" href="{% static 'css/punch.css' %}">{% endblock %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-dashboard.css' %}?v=2"><link rel="stylesheet" href="{% static 'css/admin-hr.css' %}"><link rel="stylesheet" href="{% static 'css/punch.css' %}">{% endblock %}
 
 {% block bodyclass %}{{ block.super }} sts-dashboard sts-hr app-hr{% endblock %}
 

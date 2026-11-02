@@ -6,11 +6,14 @@ from unittest import mock
 
 import pymupdf
 from docx import Document
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.core import mail
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.db.models import UniqueConstraint
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -381,6 +384,24 @@ class SubjectScopeTests(BlueprintTestCase):
         self.assertNotContains(response, "Science class 8 question")
         url = reverse("admin:questionbank_question_change", args=[self.science_q.pk])
         self.assertEqual(self.client.get(url).status_code, 302)  # "doesn't exist" for them
+
+    def test_second_all_grades_assignment_is_rejected(self):
+        # Checked by validation, not only the database: MySQL doesn't create the conditional unique constraint.
+        duplicate = SubjectAssignment(user=self.physics_teacher, subject=self.physics, grade=None)
+        with self.assertRaises(ValidationError):
+            duplicate.full_clean()
+
+    def test_only_known_conditional_constraints_exist(self):
+        # settings silences models.W036, MySQL's "conditional constraint not created" warning. That's safe only for
+        # constraints that are also enforced by validation. A new one must be checked like the one above, then
+        # listed here; otherwise MySQL would skip it silently.
+        conditional = {
+            f"{model._meta.label}.{c.name}"
+            for model in apps.get_models()
+            for c in model._meta.constraints
+            if isinstance(c, UniqueConstraint) and c.condition is not None
+        }
+        self.assertEqual(conditional, {"questionbank.SubjectAssignment.one_all_grades_assignment"})
 
     def test_grade_specific_assignment(self):
         response = self.question_list(self.science_hod)

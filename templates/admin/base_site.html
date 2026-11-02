@@ -5,7 +5,7 @@
 
 {% block extrastyle %}
 <link rel="preload" href="{% static 'fonts/inter-latin-wght-normal.woff2' %}" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="{% static 'css/admin-theme.css' %}?v=2">
+<link rel="stylesheet" href="{% static 'css/admin-theme.css' %}?v=3">
 {% endblock %}
 
 {% block extrahead %}
@@ -53,10 +53,10 @@
     <a class="notif__all" href="{% url 'notifications:list' %}">See all notifications</a>
   </div>
 </div>
-<span class="sts-user">
+<a class="sts-user" href="{% url 'profile' %}" title="My profile">
   <span class="sts-user__avatar" aria-hidden="true">{% firstof user.get_short_name user.get_username as display_name %}{{ display_name|slice:":1"|upper }}</span>
   <span class="sts-user__name">{{ display_name }}</span>
-</span>
+</a>
 {% endblock %}
 
 {% block nav-global %}{% endblock %}

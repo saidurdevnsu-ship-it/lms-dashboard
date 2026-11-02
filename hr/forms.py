@@ -33,5 +33,15 @@ class MarkAttendanceDateForm(forms.Form):
     date = forms.DateField(widget=DATE_INPUT)
 
 
+class EmployeeContactForm(forms.ModelForm):
+    """The part of an employee record that people keep up to date themselves on "My profile". Job details stay
+    with HR."""
+
+    class Meta:
+        model = Employee
+        fields = ["phone", "address"]
+        widgets = {"address": forms.Textarea(attrs={"rows": 3})}
+
+
 def active_employees():
     return Employee.objects.filter(is_active=True).select_related("user", "department", "designation")

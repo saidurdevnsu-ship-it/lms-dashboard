@@ -1,0 +1,10 @@
+Hello {% firstof user.get_short_name user.get_username %},
+
+The email address on your STS Pulse account ({{ user.get_username }}) was changed from {{ old_email }} to {{ new_email }}.
+
+If you made this change, you don't need to do anything.
+
+If you didn't, someone may be using your account. Tell the school admin straight away, and sign in to change your password:
+{{ sign_in_url }}
+
+STS Pulse

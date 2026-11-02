@@ -1,3 +1,4 @@
+from datetime import date
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -9,6 +10,8 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from audit.models import AuditEvent
+from hr.models import Department, Designation, Employee
 from notifications.models import Notification
 
 from .roles import DEFAULT_ROLES
@@ -89,12 +92,129 @@ class WorkspaceTests(TestCase):
         self.client.get(reverse("admin:hr_employee_changelist"))
         self.assertRedirects(self.client.get(reverse("admin:index")), reverse("admin:app_list", args=["hr"]))
 
+    def test_mark_all_read_leaves_the_other_workspace_unread(self):
+        user = self.make_user("view_question", "view_employee")
+        hr_note = Notification.objects.create(recipient=user, title="Leave approved", url="/admin/hr/leaverequest/1/change/")
+        academic_note = Notification.objects.create(recipient=user, title="Blueprint due", url="/admin/questionbank/")
+        self.client.force_login(user)
+        self.client.get(reverse("switch_workspace", args=["academic"]))
+        self.client.post(reverse("notifications:read_all"))
+        hr_note.refresh_from_db()
+        academic_note.refresh_from_db()
+        self.assertTrue(academic_note.is_read)
+        self.assertFalse(hr_note.is_read)
+
+    def test_losing_access_to_the_saved_workspace_does_not_empty_the_dashboard(self):
+        user = self.make_user("view_question", "view_employee")
+        self.client.force_login(user)
+        self.client.get(reverse("switch_workspace", args=["hr"]))
+        user.user_permissions.remove(Permission.objects.get(codename="view_employee"))
+        response = self.client.get(reverse("admin:index"))
+        self.assertContains(response, reverse("admin:questionbank_question_changelist"))
+        self.assertNotContains(response, "You don't have permission")
+
+    def test_managing_users_without_hr_still_opens_users_and_roles(self):
+        self.client.force_login(self.make_user("view_question", "view_user", "view_group"))
+        self.client.get(reverse("switch_workspace", args=["hr"]))
+        self.assertRedirects(self.client.get(reverse("admin:index")), reverse("admin:app_list", args=["auth"]))
+        self.assertContains(self.client.get(reverse("admin:auth_user_changelist")), "ws-bar--hr")
+
     def test_new_sign_in_asks_again(self):
         self.make_user("view_question", "view_employee")
         self.client.login(username="staff", password="Pw-12345!")
         self.client.get(reverse("switch_workspace", args=["hr"]))
         self.client.post(reverse("login"), {"username": "staff", "password": "Pw-12345!"})
         self.assertRedirects(self.client.get(reverse("admin:index")), reverse("choose_workspace"))
+
+
+@override_settings(MAKE_WEBHOOK_URL="", MAKE_MAILHOOK_ADDRESS="")
+class ProfileTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            "nadia", "nadia@example.com", "Pw-12345!", first_name="Nadia", is_staff=True)
+        self.client.force_login(self.user)
+
+    def save(self, **changes):
+        data = {"first_name": "Nadia", "last_name": "", "email": "nadia@example.com", **changes}
+        return self.client.post(reverse("profile"), data)
+
+    def test_header_links_to_my_profile(self):
+        self.assertContains(self.client.get(reverse("admin:index")), f'href="{reverse("profile")}"')
+
+    def test_updates_name_and_logs_it(self):
+        self.assertRedirects(self.save(last_name="Rahman"), reverse("profile"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.last_name, "Rahman")
+        event = AuditEvent.objects.get(action=AuditEvent.Action.CHANGED, actor=self.user)
+        self.assertIn("last_name", event.details)
+
+    def test_email_change_needs_the_current_password(self):
+        response = self.save(email="new@example.com")
+        self.assertContains(response, "Enter your current password to change your email.")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "nadia@example.com")
+        self.save(email="new@example.com", current_password="Pw-12345!")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "new@example.com")
+
+    def test_email_must_be_free(self):
+        get_user_model().objects.create_user("other", "taken@example.com")
+        response = self.save(email="Taken@example.com", current_password="Pw-12345!")
+        self.assertContains(response, "Another account already uses this email.")
+
+    def test_employee_updates_contact_details_but_not_job_details(self):
+        employee = Employee.objects.create(
+            user=self.user, employee_id="T-009", department=Department.objects.create(name="Science"),
+            designation=Designation.objects.create(name="Teacher"), joining_date=date(2025, 1, 1))
+        self.assertContains(self.client.get(reverse("profile")), "T-009")
+        self.save(phone="01700000000", address="Uttara", employee_id="HACK")
+        employee.refresh_from_db()
+        self.assertEqual((employee.phone, employee.address, employee.employee_id), ("01700000000", "Uttara", "T-009"))
+
+    def test_people_without_an_employee_record_have_no_contact_fields(self):
+        self.assertNotContains(self.client.get(reverse("profile")), 'name="phone"')
+
+    def test_profile_needs_sign_in(self):
+        self.client.logout()
+        self.assertEqual(self.client.get(reverse("profile")).status_code, 302)
+
+    def test_a_shared_email_does_not_block_other_changes(self):
+        # Django allows two accounts with one email, and older accounts may share one already.
+        get_user_model().objects.create_user("nadia2", "Nadia@example.com")
+        self.assertRedirects(self.save(last_name="Rahman"), reverse("profile"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.last_name, "Rahman")
+
+    def test_profile_is_never_cached(self):
+        self.assertIn("no-store", self.client.get(reverse("profile"))["Cache-Control"])
+
+    def test_email_change_tells_the_old_address_and_logs_both(self):
+        self.save(email="new@example.com", current_password="Pw-12345!")
+        self.assertEqual([m.to for m in mail.outbox], [["nadia@example.com"]])
+        self.assertIn("new@example.com", mail.outbox[0].body)
+        event = AuditEvent.objects.get(action=AuditEvent.Action.CHANGED, actor=self.user)
+        self.assertIn("nadia@example.com", event.details)
+        self.assertIn("new@example.com", event.details)
+
+    def test_wrong_password_on_email_change_is_logged(self):
+        with self.assertLogs("learning.forms", "WARNING"):
+            self.save(email="new@example.com", current_password="wrong")
+        self.assertEqual(mail.outbox, [])
+
+    def test_saving_without_changes_writes_nothing(self):
+        with mock.patch.object(get_user_model(), "save") as save:
+            response = self.client.post(reverse("profile"), {"first_name": "Nadia", "last_name": "",
+                                                             "email": "nadia@example.com"}, follow=True)
+        save.assert_not_called()
+        self.assertContains(response, "Nothing changed.")
+        self.assertFalse(AuditEvent.objects.filter(action=AuditEvent.Action.CHANGED).exists())
+
+    def test_too_long_phone_is_a_form_error(self):
+        Employee.objects.create(
+            user=self.user, employee_id="T-010", department=Department.objects.create(name="Arts"),
+            designation=Designation.objects.create(name="Teacher"), joining_date=date(2025, 1, 1))
+        response = self.save(phone="0" * 31)
+        self.assertContains(response, "at most 30 characters")
 
 
 @override_settings(MAKE_WEBHOOK_URL="", MAKE_MAILHOOK_ADDRESS="")

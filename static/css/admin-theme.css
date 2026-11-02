@@ -256,6 +256,8 @@ textarea:focus-visible {
   font-weight: 650;
 }
 .sts-user__name { font-weight: 600; color: var(--body-loud-color); }
+#user-tools a.sts-user:link, #user-tools a.sts-user:visited { text-decoration: none; border-bottom: 0; }
+#user-tools a.sts-user:hover .sts-user__name { color: var(--link-fg); }
 
 .theme-toggle svg.theme-icon-when-auto,
 .theme-toggle svg.theme-icon-when-dark,

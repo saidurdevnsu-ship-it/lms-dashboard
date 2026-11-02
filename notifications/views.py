@@ -47,7 +47,9 @@ def open_notification(request, pk):
 @staff_member_required
 @require_POST
 def read_all(request):
-    Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+    # Only what the bell shows: the other workspace's notifications stay unread until the user switches.
+    unread = Notification.objects.filter(recipient=request.user, is_read=False)
+    workspaces.without_hidden_links(request, unread).update(is_read=True)
     if request.headers.get("x-requested-with") == "fetch":
         return JsonResponse({"unread": 0})
     target = request.POST.get("next", "")

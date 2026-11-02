@@ -7,7 +7,7 @@ from django.db.models import Q
 from .models import Notification
 
 
-def notify(users, title, *, body="", url="", kind=Notification.Kind.INFO, dedupe_key="", exclude=None):
+def notify(users, title, *, body="", url="", kind=Notification.Kind.INFO, dedupe_key=None, exclude=None):
     """Notify one user or an iterable of users. With a dedupe_key, each user gets it at most once.
 
     Returns the notifications created by this call (none for users who already had the dedupe_key).

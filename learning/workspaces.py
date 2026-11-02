@@ -6,7 +6,7 @@ from django.urls import reverse
 
 SESSION_KEY = "workspace"
 
-# Admin app labels in each workspace; the first one decides who has access. Other apps (notifications,
+# Admin app labels in each workspace; access to any of them opens the workspace. Other apps (notifications,
 # audit) belong to neither and show in both.
 APPS = {
     "academic": ("questionbank",),
@@ -16,15 +16,21 @@ LABELS = {"academic": "Academic", "hr": "HR"}
 
 
 def available(user):
-    return [name for name, apps in APPS.items() if user.has_module_perms(apps[0])]
+    return [name for name, apps in APPS.items() if any(user.has_module_perms(app) for app in apps)]
 
 
 def current(request):
-    return request.session.get(SESSION_KEY)
+    """The workspace the user picked, as long as they can still open it (roles change during long sessions)."""
+    ws = request.session.get(SESSION_KEY)
+    return ws if ws in available(request.user) else None
 
 
-def home_url(name):
-    return reverse("admin:app_list", kwargs={"app_label": "hr"}) if name == "hr" else reverse("admin:index")
+def home_url(name, user):
+    if name != "hr":
+        return reverse("admin:index")
+    # Someone who only manages users and roles has no HR page; their HR home is Users & roles.
+    app_label = "hr" if user.has_module_perms("hr") else "auth"
+    return reverse("admin:app_list", kwargs={"app_label": app_label})
 
 
 def of_app(app_label):
