@@ -369,3 +369,33 @@ class FinalQuestion(models.Model):
 
     def __str__(self):
         return f"Q{self.order}"
+
+
+class AIUsage(models.Model):
+    """Tokens used by each Claude request, so cost and the need for retrieval (RAG) can be judged from real data.
+    Holds counts only, never questions, so final papers stay confidential."""
+
+    class Purpose(models.TextChoices):
+        QUESTIONS = "questions", "Question bank generation"
+        FINAL_PAPER = "final_paper", "Final paper"
+        FINAL_REVIEW = "final_review", "Final paper review"
+        FINAL_QUESTION = "final_question", "Single final question"
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                             related_name="+")
+    purpose = models.CharField(max_length=20, choices=Purpose.choices)
+    model = models.CharField(max_length=50)
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    cache_read_tokens = models.PositiveIntegerField(default=0)
+    cache_write_tokens = models.PositiveIntegerField(default=0)
+    request_id = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = verbose_name_plural = "AI usage"
+        default_permissions = ()  # super admins only; see AIUsageAdmin
+
+    def __str__(self):
+        return f"{self.get_purpose_display()} · {self.input_tokens} in / {self.output_tokens} out"

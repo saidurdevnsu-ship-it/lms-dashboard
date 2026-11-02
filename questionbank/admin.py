@@ -1,9 +1,9 @@
 import calendar as pycalendar
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
 from django.http import Http404, HttpResponse, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
@@ -17,11 +17,11 @@ from learning.approvals import SELF_APPROVAL_MESSAGE, is_own, others_only
 
 from . import export, workflow
 from .scope import allowed_subjects, covers, has_no_assignments, in_scope
-from .ai import GenerationError, claude_status, generate_questions, start_final_paper
+from .ai import GenerationError, claude_status, generate_questions, start_final_paper, start_question_regeneration
 from .forms import BlueprintForm, GenerateQuestionsForm, KnowledgeSourceForm
 from .models import (
-    AcademicEvent, BlueprintItem, FinalPaper, FinalQuestion, Grade, KnowledgeSource, Question, QuestionBlueprint,
-    Subject, SubjectAssignment,
+    AcademicEvent, AIUsage, BlueprintItem, FinalPaper, FinalQuestion, Grade, KnowledgeSource, Question,
+    QuestionBlueprint, Subject, SubjectAssignment,
 )
 from .workflow import can_manage_final, can_review
 
@@ -574,6 +574,22 @@ class FinalPaperAdmin(admin.ModelAdmin):
               "controller_notes")
     inlines = (FinalQuestionInline,)
 
+    # Hand edits after generation aren't covered by the automatic checks; say so on the question.
+    CHECKED_FIELDS = {"text", "options", "answer"}
+    EDITED_NOTE = "Edited after the automatic checks. Check it by hand."
+    ADDED_NOTE = "Added by hand after the automatic checks. Check it by hand."
+
+    def save_formset(self, request, form, formset, change):
+        if formset.model is FinalQuestion:
+            for f in formset.forms:
+                if not f.has_changed() or f in formset.deleted_forms:
+                    continue
+                if f.instance.pk is None:
+                    f.instance.check_notes = self.ADDED_NOTE
+                elif self.CHECKED_FIELDS.intersection(f.changed_data):
+                    f.instance.check_notes = self.EDITED_NOTE
+        super().save_formset(request, form, formset, change)
+
     def has_module_permission(self, request):
         return can_manage_final(request.user)
 
@@ -608,12 +624,22 @@ class FinalPaperAdmin(admin.ModelAdmin):
     def changeform_view(self, request, object_id=None, form_url="", extra_context=None):
         if not can_manage_final(request.user):
             raise PermissionDenied
-        if request.method == "POST" and object_id and ("_lock" in request.POST or "_regenerate" in request.POST):
+        if request.method == "POST" and object_id and {"_lock", "_regenerate", "_regenerate_one"} & set(request.POST):
             paper = get_object_or_404(FinalPaper, pk=object_id)
             try:
                 if "_lock" in request.POST:
                     workflow.lock_final(paper, request.user)
                     self.message_user(request, "Locked. This is now the final paper.", messages.SUCCESS)
+                elif "_regenerate_one" in request.POST:
+                    try:
+                        order = int(request.POST.get("question_order", ""))
+                    except ValueError:
+                        raise GenerationError("Choose a question number.")
+                    if not paper.questions.filter(order=order).exists():
+                        raise GenerationError(f"This paper has no question {order}.")
+                    start_question_regeneration(paper, order, request.user)
+                    self.message_user(request, f"Claude is writing a new question {order}. You'll get a "
+                                               "notification when it's ready.", messages.SUCCESS)
                 else:
                     start_final_paper(paper.blueprint, request.user)
                     self.message_user(request, "Claude is writing a new set of questions. It takes a few minutes; "
@@ -621,7 +647,9 @@ class FinalPaperAdmin(admin.ModelAdmin):
             except (workflow.WorkflowError, GenerationError) as exc:
                 self.message_user(request, str(exc), messages.ERROR)
             return HttpResponseRedirect(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
-        extra_context = {**(extra_context or {}), "final": self.get_object(request, object_id) if object_id else None}
+        final = self.get_object(request, object_id) if object_id else None
+        extra_context = {**(extra_context or {}), "final": final,
+                         "paper_problems": workflow.paper_problems(final) if final else []}
         return super().changeform_view(request, object_id, form_url, extra_context)
 
     def get_urls(self):
@@ -664,3 +692,35 @@ class FinalPaperAdmin(admin.ModelAdmin):
         response = HttpResponse(build(paper, answers), content_type=content_type)
         response["Content-Disposition"] = f'attachment; filename="{export.filename(paper, answers, fmt)}"'
         return response
+
+
+
+@admin.register(AIUsage)
+class AIUsageAdmin(admin.ModelAdmin):
+    """Super admins only: token counts per Claude request, to judge cost before investing in retrieval (RAG)."""
+
+    change_list_template = "admin/questionbank/aiusage/change_list.html"
+    list_display = ("created_at", "purpose", "user", "model", "input_tokens", "output_tokens", "cache_read_tokens")
+    list_filter = ("purpose", "model")
+
+    def has_module_permission(self, request):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return self.has_module_permission(request)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        # Aware start of this month in local time; avoids MySQL date functions that need time zone tables.
+        start = timezone.make_aware(datetime.combine(timezone.localdate().replace(day=1), time.min))
+        totals = AIUsage.objects.filter(created_at__gte=start).aggregate(
+            requests=Count("id"), input=Sum("input_tokens"), output=Sum("output_tokens"))
+        return super().changelist_view(request, {**(extra_context or {}), "month_totals": totals})

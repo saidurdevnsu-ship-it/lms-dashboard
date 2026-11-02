@@ -8,11 +8,23 @@ from django.utils import timezone
 from notifications.models import Notification
 from notifications.services import notify
 
-from .models import AcademicEvent, Question, QuestionBlueprint
+from .models import AcademicEvent, FinalPaper, Question, QuestionBlueprint
 from .scope import allowed_subjects, covers
+from .workflow import can_manage_final
 
 # Remind 7, 3 and 1 day(s) before a deadline, then once when it's overdue.
 BUCKETS = ((1, "1d"), (3, "3d"), (7, "7d"))
+
+# Warn exam controllers this many days before an exam whose final paper isn't locked.
+EXAM_WARNING_DAYS = 7
+
+
+def _starts(days_left):
+    if days_left == 0:
+        return "starts today"
+    if days_left == 1:
+        return "starts tomorrow"
+    return f"starts in {days_left} days"
 
 
 def _bucket(days_left):
@@ -80,5 +92,21 @@ def ensure_reminders(user):
                 url=reverse("admin:questionbank_question_generate"),
                 kind=Notification.Kind.REMINDER,
                 dedupe_key=f"event-deadline:{event.pk}",
+            )
+
+    if can_manage_final(user):
+        soon = (QuestionBlueprint.objects
+                .filter(exam__start_date__range=(today, today + timedelta(days=EXAM_WARNING_DAYS)))
+                .exclude(final_paper__status=FinalPaper.Status.LOCKED)
+                .select_related("exam"))
+        for bp in soon:
+            days_left = (bp.exam.start_date - today).days
+            created += notify(
+                user,
+                f"Exam paper not final: {bp.title} ({_starts(days_left)})",
+                body=f"{bp.exam.title} starts on {bp.exam.start_date:%d %b %Y}. The final paper isn't locked yet.",
+                url=reverse("admin:questionbank_questionblueprint_change", args=[bp.pk]),
+                kind=Notification.Kind.WARNING,
+                dedupe_key=f"exam-paper:{bp.pk}:{_bucket(days_left)}",
             )
     return created

@@ -1,7 +1,9 @@
+import json
 import shutil
 import tempfile
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO, StringIO
+from types import SimpleNamespace
 from unittest import mock
 
 import pymupdf
@@ -16,6 +18,7 @@ from django.core.management import call_command
 from django.db.models import UniqueConstraint
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from audit.models import AuditEvent
 from notifications.models import Notification
@@ -23,7 +26,7 @@ from notifications.models import Notification
 from . import ai, workflow
 from .forms import GenerateQuestionsForm
 from .models import (
-    AcademicEvent, BlueprintItem, FinalPaper, Grade, KnowledgeSource, Question, QuestionBlueprint, Subject,
+    AcademicEvent, AIUsage, BlueprintItem, FinalPaper, FinalQuestion, Grade, KnowledgeSource, Question, QuestionBlueprint, Subject,
     SubjectAssignment,
 )
 from .reminders import ensure_reminders
@@ -64,6 +67,17 @@ class BlueprintTestCase(TestCase):
 
 
 class FinalPaperTests(BlueprintTestCase):
+    def make_paper(self):
+        with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(3)):
+            return ai.generate_final_paper(self.bp, self.controller)
+
+    def test_slots_follow_blueprint_order_and_details(self):
+        from .papers import blueprint_slots
+        slots = blueprint_slots(list(self.bp.items.all()))
+        self.assertEqual([(s.section, s.question_type, s.marks) for s in slots],
+                         [("A", "mcq", 1), ("A", "mcq", 1), ("B", "short", 5)])
+        self.assertEqual(slots[0].type_label, "Multiple choice")
+
     def test_marks_sections_and_types_follow_the_blueprint(self):
         with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(3)):
             paper = ai.generate_final_paper(self.bp, self.controller)
@@ -72,11 +86,147 @@ class FinalPaperTests(BlueprintTestCase):
         self.assertEqual([q.question_type for q in questions], ["mcq", "mcq", "short"])
         self.assertEqual(paper.total_marks, 7)
 
+    def test_generated_paper_matches_its_blueprint(self):
+        self.assertEqual(workflow.paper_problems(self.make_paper()), [])
+
+    def test_paper_missing_a_question_cannot_be_locked(self):
+        paper = self.make_paper()
+        paper.questions.last().delete()
+        with self.assertRaisesMessage(workflow.WorkflowError, "The blueprint asks for 3 questions; this paper has 2."):
+            workflow.lock_final(paper, self.controller)
+
+    def test_changed_marks_cannot_be_locked(self):
+        paper = self.make_paper()
+        first = paper.questions.first()
+        first.marks = 4
+        first.save()
+        problems = workflow.paper_problems(paper)
+        self.assertIn("Question 1 should be Multiple choice in A for 1 mark(s).", problems)
+        self.assertIn("Total marks are 10; the blueprint's total is 7.", problems)
+        with self.assertRaises(workflow.WorkflowError):
+            workflow.lock_final(paper, self.controller)
+
+    def test_page_lists_what_to_fix_before_locking(self):
+        paper = self.make_paper()
+        paper.questions.last().delete()
+        self.client.force_login(self.controller)
+        response = self.client.get(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
+        self.assertContains(response, "The blueprint asks for 3 questions; this paper has 2.")
+
+    def post_questions(self, paper, **first_changes):
+        """Submit the final paper's admin form as the browser does, changing fields of the first question."""
+        questions = list(paper.questions.all())
+        data = {"controller_notes": "", "questions-TOTAL_FORMS": str(len(questions)),
+                "questions-INITIAL_FORMS": str(len(questions)), "questions-MIN_NUM_FORMS": "0",
+                "questions-MAX_NUM_FORMS": "1000", "_save": "Save"}
+        for i, q in enumerate(questions):
+            values = {"id": q.pk, "paper": paper.pk, "order": q.order, "section": q.section,
+                      "question_type": q.question_type, "marks": q.marks, "text": q.text,
+                      "options": json.dumps(q.options), "answer": q.answer, "explanation": q.explanation,
+                      "source_reference": q.source_reference}
+            if i == 0:
+                values.update(first_changes)
+            data.update({f"questions-{i}-{k}": v for k, v in values.items()})
+            # options has a callable default, so the page also carries its initial value in a hidden input.
+            data[f"initial-questions-{i}-options"] = json.dumps(q.options)
+        self.client.force_login(self.controller)
+        return self.client.post(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]), data)
+
+    def test_edited_question_is_marked_unchecked(self):
+        paper = self.make_paper()
+        FinalQuestion.objects.filter(paper=paper).update(check_notes="")
+        self.assertEqual(self.post_questions(paper, text="A better question?").status_code, 302)
+        first, second = paper.questions.all()[:2]
+        self.assertEqual(first.text, "A better question?")
+        self.assertEqual(first.check_notes, "Edited after the automatic checks. Check it by hand.")
+        self.assertEqual(second.check_notes, "")
+
+    def test_saving_without_edits_keeps_check_findings(self):
+        paper = self.make_paper()
+        FinalQuestion.objects.filter(paper=paper).update(check_notes="Fine.")
+        self.client.force_login(self.controller)
+        page = self.client.get(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
+        self.assertContains(page, 'name="initial-questions-0-options"')  # what post_questions imitates
+        self.assertEqual(self.post_questions(paper).status_code, 302)
+        self.assertEqual(paper.questions.first().check_notes, "Fine.")
+
     def test_wrong_number_of_questions_is_not_saved(self):
         with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(2)):
             with self.assertRaisesMessage(ai.GenerationError, "wrote 2 questions but the blueprint asks for 3"):
                 ai.generate_final_paper(self.bp, self.controller)
         self.assertFalse(FinalPaper.objects.filter(questions__isnull=False).exists())
+
+    def one_question(self, text="Name the gas plants take in.?"):
+        return {"questions": [{"section": "x", "question_type": "short", "text": text, "options": [],
+                               "answer": "Carbon dioxide", "explanation": "", "marks": 9,
+                               "source_reference": "Ch 2"}]}
+
+    def test_regenerate_replaces_only_that_question(self):
+        paper = self.make_paper()
+        before = list(paper.questions.values_list("text", flat=True))
+        with mock.patch.object(ai, "_ask_claude", return_value=self.one_question()) as ask:
+            q = ai.regenerate_final_question(paper, 3, self.controller)
+        self.assertEqual((q.order, q.section, q.question_type, q.marks), (3, "B", "short", 5))
+        self.assertEqual(q.text, "Name the gas plants take in.?")
+        self.assertIn("AI review", q.check_notes)
+        self.assertEqual(list(paper.questions.values_list("text", flat=True))[:2], before[:2])
+        prompt = ask.call_args.args[1][0]["content"][-1]["text"]
+        self.assertIn("Question 0?", prompt)  # tells Claude what not to repeat
+        self.assertEqual(workflow.paper_problems(paper), [])
+
+    def test_regenerated_question_close_to_another_is_flagged(self):
+        paper = self.make_paper()
+        with mock.patch.object(ai, "_ask_claude", return_value=self.one_question("Question 0?")):
+            q = ai.regenerate_final_question(paper, 3, self.controller)
+        self.assertIn("Very similar to question 1.", q.check_notes)
+
+    def test_locked_paper_question_cannot_be_regenerated(self):
+        paper = self.make_paper()
+        workflow.lock_final(paper, self.controller)
+        with mock.patch.object(ai, "_ask_claude", return_value=self.one_question()):
+            with self.assertRaisesMessage(ai.GenerationError, "locked"):
+                ai.regenerate_final_question(paper, 1, self.controller)
+
+    def test_unknown_question_number_is_refused(self):
+        with self.assertRaisesMessage(ai.GenerationError, "no question 9"):
+            ai.regenerate_final_question(self.make_paper(), 9, self.controller)
+
+    def test_question_regeneration_runs_in_the_background_and_notifies(self):
+        paper = self.make_paper()
+        with mock.patch.object(ai.threading, "Thread") as thread:
+            ai.start_question_regeneration(paper, 2, self.controller)
+        thread.return_value.start.assert_called_once()
+        paper.refresh_from_db()
+        self.assertTrue(paper.is_generating)
+        with self.assertRaisesMessage(ai.GenerationError, "already writing"):
+            ai.start_question_regeneration(paper, 2, self.controller)
+        with mock.patch.object(ai, "_ask_claude", return_value=self.one_question()):
+            ai.rewrite_final_question(paper.pk, 2, self.controller.pk)
+        paper.refresh_from_db()
+        self.assertFalse(paper.is_generating)
+        self.assertEqual(paper.questions.get(order=2).text, "Name the gas plants take in.?")
+        self.assertTrue(Notification.objects.filter(recipient=self.controller,
+                                                    title="Question 2 ready: Science mid-term").exists())
+
+    def test_page_regenerates_one_question(self):
+        paper = self.make_paper()
+        self.client.force_login(self.controller)
+        url = reverse("admin:questionbank_finalpaper_change", args=[paper.pk])
+        self.assertContains(self.client.get(url), 'name="_regenerate_one"')
+        with mock.patch.object(ai.threading, "Thread"):
+            response = self.client.post(url, {"_regenerate_one": "1", "question_order": "2"}, follow=True)
+        self.assertContains(response, "Claude is writing a new question 2")
+        paper.refresh_from_db()
+        self.assertTrue(paper.is_generating)
+
+    def test_page_rejects_a_bad_question_number(self):
+        paper = self.make_paper()
+        self.client.force_login(self.controller)
+        url = reverse("admin:questionbank_finalpaper_change", args=[paper.pk])
+        response = self.client.post(url, {"_regenerate_one": "1", "question_order": "x"}, follow=True)
+        self.assertContains(response, "Choose a question number.")
+        paper.refresh_from_db()
+        self.assertFalse(paper.is_generating)
 
     def test_generation_runs_in_the_background_and_notifies(self):
         with mock.patch.object(ai.threading, "Thread") as thread:
@@ -103,6 +253,43 @@ class FinalPaperTests(BlueprintTestCase):
         paper.refresh_from_db()
         self.assertEqual(paper.generation_error, "Claude is busy")
         self.assertFalse(paper.is_generating)
+
+
+class AIUsageTests(BlueprintTestCase):
+    def fake_response(self, text):
+        return SimpleNamespace(
+            _request_id="req_1", model="claude-test", stop_reason="end_turn",
+            content=[SimpleNamespace(type="text", text=text)],
+            usage=SimpleNamespace(input_tokens=1200, output_tokens=300, cache_read_input_tokens=1000,
+                                  cache_creation_input_tokens=0))
+
+    def ask(self, **kwargs):
+        stream = mock.MagicMock()
+        stream.__enter__.return_value.get_final_message.return_value = self.fake_response('{"questions": []}')
+        with mock.patch.object(ai.anthropic, "Anthropic") as client:
+            client.return_value.beta.messages.stream.return_value = stream
+            return ai._ask_claude("system", [], ai.OUTPUT_SCHEMA, **kwargs)
+
+    def test_every_claude_call_is_recorded(self):
+        self.ask(purpose=AIUsage.Purpose.QUESTIONS, user=self.controller)
+        usage = AIUsage.objects.get()
+        self.assertEqual((usage.purpose, usage.user, usage.model), ("questions", self.controller, "claude-test"))
+        self.assertEqual((usage.input_tokens, usage.output_tokens, usage.cache_read_tokens), (1200, 300, 1000))
+
+    def test_recording_failure_does_not_break_generation(self):
+        with mock.patch.object(AIUsage.objects, "create", side_effect=RuntimeError("db down")):
+            self.assertEqual(self.ask(purpose="questions"), {"questions": []})
+
+    def test_super_admin_sees_this_months_totals(self):
+        AIUsage.objects.create(purpose="questions", model="m", input_tokens=1000, output_tokens=200)
+        AIUsage.objects.create(purpose="final_paper", model="m", input_tokens=3000, output_tokens=800)
+        self.client.force_login(self.controller)
+        response = self.client.get(reverse("admin:questionbank_aiusage_changelist"))
+        self.assertContains(response, "This month: 2 requests · 4000 input tokens · 1000 output tokens")
+
+    def test_hod_cannot_see_usage(self):
+        self.client.force_login(self.hod)
+        self.assertEqual(self.client.get(reverse("admin:questionbank_aiusage_changelist")).status_code, 403)
 
 
 class DocumentUploadTests(BlueprintTestCase):
@@ -296,6 +483,27 @@ class ReminderTests(BlueprintTestCase):
         self.assertIn("Science mid-term", mail.outbox[0].body)
         call_command("send_reminders", stdout=StringIO())
         self.assertEqual(len(mail.outbox), 1)
+
+    def exam_in(self, days):
+        self.bp.exam = AcademicEvent.objects.create(
+            title="Mid-term exams", event_type=AcademicEvent.EventType.INTERNAL_EXAM,
+            start_date=timezone.localdate() + timedelta(days=days))
+        self.bp.save()
+
+    def test_exam_controller_is_warned_when_an_exam_is_near_and_the_paper_is_not_final(self):
+        self.exam_in(5)
+        created = ensure_reminders(self.controller)
+        self.assertEqual([n.title for n in created], ["Exam paper not final: Science mid-term (starts in 5 days)"])
+        self.assertEqual(ensure_reminders(self.controller), [])     # once per reminder step
+        self.assertEqual(ensure_reminders(self.hod), [])            # only exam controllers
+
+    def test_no_exam_warning_far_ahead_or_once_the_paper_is_locked(self):
+        self.exam_in(30)
+        self.assertEqual(ensure_reminders(self.controller), [])
+        self.exam_in(2)
+        with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(3)):
+            workflow.lock_final(ai.generate_final_paper(self.bp, self.controller), self.controller)
+        self.assertEqual(ensure_reminders(self.controller), [])
 
 
 class RoleTests(BlueprintTestCase):

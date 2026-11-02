@@ -62,6 +62,7 @@
 .wf-review textarea { width: 100%; box-sizing: border-box; font: inherit; }
 .wf-muted { color: var(--body-quiet-color); font-weight: 400; }
 .wf-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.wf-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 
 .wf-btn, a.wf-btn:link, a.wf-btn:visited {
   display: inline-flex;

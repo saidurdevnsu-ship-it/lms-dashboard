@@ -14,6 +14,7 @@ from notifications.models import Notification
 from notifications.services import notify, users_with_perm
 
 from .models import FinalPaper, QuestionBlueprint
+from .papers import blueprint_slots
 from .scope import covers
 
 Status = QuestionBlueprint.Status
@@ -112,6 +113,23 @@ def return_to_author(bp, user, note):
            url=_url(bp), kind=Notification.Kind.WARNING, exclude=user)
 
 
+def paper_problems(paper):
+    """Ways the paper no longer matches its blueprint, e.g. after questions were added, deleted or re-marked by
+    hand. A paper is only locked when this is empty."""
+    slots = blueprint_slots(list(paper.blueprint.items.all()))
+    questions = list(paper.questions.order_by("order", "id"))
+    problems = []
+    if len(questions) != len(slots):
+        problems.append(f"The blueprint asks for {len(slots)} questions; this paper has {len(questions)}.")
+    for n, (q, slot) in enumerate(zip(questions, slots), 1):
+        if (q.section, q.question_type, q.marks) != (slot.section, slot.question_type, slot.marks):
+            problems.append(f"Question {n} should be {slot.type_label} in {slot.section} for {slot.marks} mark(s).")
+    expected, actual = sum(s.marks for s in slots), sum(q.marks for q in questions)
+    if actual != expected:
+        problems.append(f"Total marks are {actual}; the blueprint's total is {expected}.")
+    return problems
+
+
 @transaction.atomic
 def lock_final(paper, user):
     if paper.status == FinalPaper.Status.LOCKED:
@@ -120,6 +138,9 @@ def lock_final(paper, user):
         raise WorkflowError("Claude is still writing this paper. Lock it once it's ready.")
     if not paper.questions.exists():
         raise WorkflowError("Generate the paper before locking it.")
+    problems = paper_problems(paper)
+    if problems:
+        raise WorkflowError(" ".join(problems) + " Fix these, then lock.")
     paper.status = FinalPaper.Status.LOCKED
     paper.locked_by, paper.locked_at = user, timezone.now()
     paper.save()

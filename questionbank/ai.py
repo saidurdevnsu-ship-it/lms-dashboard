@@ -13,6 +13,7 @@ from audit.services import Action, record
 from .checks import find_similar, normalize
 from .documents import extract_text
 from .models import KnowledgeSource, Question
+from .papers import blueprint_slots
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ def generate_questions(*, subject, grade, topic, question_type, difficulty, coun
         difficulty=difficulty, count=count, language=language,
     )
 
-    items = _ask_claude(SYSTEM_PROMPT, messages, OUTPUT_SCHEMA)["questions"]
+    items = _ask_claude(SYSTEM_PROMPT, messages, OUTPUT_SCHEMA, purpose="questions", user=user)["questions"]
 
     questions = [
         Question(
@@ -173,8 +174,27 @@ def generate_questions(*, subject, grade, topic, question_type, difficulty, coun
     return kept
 
 
-def _ask_claude(system, messages, schema, *, effort="medium"):
-    """Send one structured-output request to Claude and return the parsed JSON object."""
+def _record_usage(response, purpose, user):
+    """Save the request's token counts. Never raises: measuring must not break generation."""
+    from .models import AIUsage
+
+    try:
+        usage = response.usage
+        AIUsage.objects.create(
+            user=user if getattr(user, "pk", None) else None, purpose=purpose,
+            model=(getattr(response, "model", "") or settings.QUESTION_GENERATION_MODEL)[:50],
+            input_tokens=usage.input_tokens or 0, output_tokens=usage.output_tokens or 0,
+            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            request_id=(getattr(response, "_request_id", "") or "")[:100],
+        )
+    except Exception:
+        logger.exception("Couldn't record AI usage")
+
+
+def _ask_claude(system, messages, schema, *, effort="medium", purpose, user=None):
+    """Send one structured-output request to Claude and return the parsed JSON object. purpose (an
+    AIUsage.Purpose value) and user label the token counts recorded for cost tracking."""
     try:
         client = anthropic.Anthropic()
         with client.beta.messages.stream(
@@ -213,6 +233,7 @@ def _ask_claude(system, messages, schema, *, effort="medium"):
         response._request_id, response.usage.input_tokens, response.usage.output_tokens,
         response.usage.cache_read_input_tokens,
     )
+    _record_usage(response, purpose, user)
 
     if response.stop_reason == "refusal":
         raise GenerationError("Claude declined to generate questions for this material.")
@@ -306,6 +327,37 @@ def blueprint_materials(blueprint):
     return chosen if blueprint.materials.exists() else active
 
 
+def _blueprint_documents(blueprint):
+    """The blueprint's materials (and sample paper) as Claude document blocks, with the books cached."""
+    sources = list(blueprint_materials(blueprint))
+    if not sources:
+        raise GenerationError(
+            f"No active books are uploaded for {blueprint.subject} / {blueprint.grade}. "
+            "Upload one under Books & knowledge sources so the paper is grounded in the syllabus."
+        )
+    total = sum(s.file.size for s in sources) + (blueprint.sample_file.size if blueprint.sample_file else 0)
+    if total > MAX_TOTAL_SOURCE_BYTES:
+        raise GenerationError("The books and sample paper are too large to send together. Upload chapters instead.")
+    documents = [_source_block(s) for s in sources]
+    documents[-1]["cache_control"] = {"type": "ephemeral"}
+    if blueprint.sample_file:
+        sample = KnowledgeSource(title="Sample paper (style reference only)", file=blueprint.sample_file,
+                                 material_type=KnowledgeSource.MaterialType.SAMPLE_QUESTIONS)
+        documents.append(_source_block(sample))
+    return documents
+
+
+def _final_fields(q):
+    """The fields of a FinalQuestion that come from Claude's reply, cleaned up."""
+    return {
+        "text": q["text"].strip(),
+        "options": [o.strip() for o in q["options"]] if q["question_type"] == Question.QuestionType.MCQ else [],
+        "answer": q["answer"].strip(),
+        "explanation": q["explanation"].strip(),
+        "source_reference": q["source_reference"].strip()[:255],
+    }
+
+
 def generate_final_paper(blueprint, user):
     """Write (or rewrite) the confidential final paper for an approved blueprint. Returns the FinalPaper."""
     from django.db import transaction
@@ -316,37 +368,20 @@ def generate_final_paper(blueprint, user):
     items = list(blueprint.items.all())
     if not items:
         raise GenerationError("This blueprint has no sections yet.")
-    sources = list(blueprint_materials(blueprint))
-    if not sources:
-        raise GenerationError(
-            f"No active books are uploaded for {blueprint.subject} / {blueprint.grade}. "
-            "Upload one under Books & knowledge sources so the paper is grounded in the syllabus."
-        )
-    total = sum(s.file.size for s in sources) + (blueprint.sample_file.size if blueprint.sample_file else 0)
-    if total > MAX_TOTAL_SOURCE_BYTES:
-        raise GenerationError("The books and sample paper are too large to send together. Upload chapters instead.")
-
-    documents = [_source_block(s) for s in sources]
-    documents[-1]["cache_control"] = {"type": "ephemeral"}
-    if blueprint.sample_file:
-        sample = KnowledgeSource(title="Sample paper (style reference only)", file=blueprint.sample_file,
-                                 material_type=KnowledgeSource.MaterialType.SAMPLE_QUESTIONS)
-        documents.append(_source_block(sample))
+    documents = _blueprint_documents(blueprint)
     messages = [{"role": "user", "content": [*documents, {"type": "text", "text": _blueprint_text(blueprint, items)}]}]
 
-    data = _ask_claude(FINAL_SYSTEM_PROMPT, messages, FINAL_SCHEMA, effort="high")
+    data = _ask_claude(FINAL_SYSTEM_PROMPT, messages, FINAL_SCHEMA, effort="high", purpose="final_paper", user=user)
     questions = [q for q in data["questions"] if q.get("text", "").strip()]
-    # One slot per question the blueprint asks for, in blueprint order: (section, type, marks).
-    slots = [(item.section or f"Section {n}", item.question_type, item.marks_each)
-             for n, item in enumerate(items, 1) for _ in range(item.count)]
+    slots = blueprint_slots(items)
     if len(questions) != len(slots):
         raise GenerationError(f"Claude wrote {len(questions)} questions but the blueprint asks for {len(slots)}, "
                               "so the paper wasn't saved. Please generate it again.")
     # The blueprint decides sections, types and marks, so the totals always match it.
-    for q, (section, question_type, marks) in zip(questions, slots):
-        q.update(section=section, question_type=question_type, marks=marks)
+    for q, slot in zip(questions, slots):
+        q.update(section=slot.section, question_type=slot.question_type, marks=slot.marks)
 
-    notes, summary = check_final_questions(questions, items, documents)
+    notes, summary = check_final_questions(questions, items, documents, user=user)
 
     with transaction.atomic():
         paper, _ = FinalPaper.objects.select_for_update().get_or_create(blueprint=blueprint)
@@ -356,10 +391,7 @@ def generate_final_paper(blueprint, user):
         FinalQuestion.objects.bulk_create([
             FinalQuestion(
                 paper=paper, order=n, section=q["section"].strip()[:50], question_type=q["question_type"],
-                text=q["text"].strip(), answer=q["answer"].strip(), explanation=q["explanation"].strip(),
-                options=[o.strip() for o in q["options"]] if q["question_type"] == Question.QuestionType.MCQ else [],
-                marks=q["marks"], source_reference=q["source_reference"].strip()[:255],
-                check_notes="\n".join(notes[n]),
+                marks=q["marks"], check_notes="\n".join(notes[n]), **_final_fields(q),
             )
             for n, q in enumerate(questions, 1)
         ])
@@ -401,7 +433,7 @@ REVIEW_SCHEMA = {
 }
 
 
-def check_final_questions(questions, items, documents):
+def check_final_questions(questions, items, documents, user=None):
     """Flag repeated questions, copied blueprint samples, and (by a second Claude pass over the same, cached
     materials) questions outside the syllabus or with wrong answers. Returns ({number: [notes]}, summary)."""
     notes = {n: [] for n in range(1, len(questions) + 1)}
@@ -424,7 +456,8 @@ def check_final_questions(questions, items, documents):
         *documents, {"type": "text", "text": "Check this draft paper:\n\n" + "\n".join(listing)}]}]
     reviewed = True
     try:
-        for r in _ask_claude(REVIEW_SYSTEM_PROMPT, review_messages, REVIEW_SCHEMA)["reviews"]:
+        for r in _ask_claude(REVIEW_SYSTEM_PROMPT, review_messages, REVIEW_SCHEMA,
+                             purpose="final_review", user=user)["reviews"]:
             if r["number"] not in notes:
                 continue
             if not r["in_syllabus"]:
@@ -445,24 +478,117 @@ def check_final_questions(questions, items, documents):
     return notes, summary
 
 
+REGENERATED_NOTE = "Regenerated on its own; the AI review of syllabus fit and answers didn't check it. Check it by hand."
+
+
+def regenerate_final_question(paper, order, user):
+    """Replace one question of an unlocked final paper with a new one for the same blueprint slot. Cheaper and
+    faster than regenerating the whole paper, and keeps the exam controller's edits to the others."""
+    from django.db import transaction
+
+    from .models import FinalPaper, FinalQuestion
+
+    blueprint = paper.blueprint
+    if paper.status == FinalPaper.Status.LOCKED:
+        raise GenerationError("This final paper is locked and can't be regenerated.")
+    questions = list(paper.questions.order_by("order", "id"))
+    target = next((q for q in questions if q.order == order), None)
+    if target is None:
+        raise GenerationError(f"This paper has no question {order}.")
+    slots = blueprint_slots(list(blueprint.items.all()))
+    position = questions.index(target)
+    if position >= len(slots):
+        raise GenerationError(f"Question {order} isn't part of the blueprint. Edit or delete it by hand.")
+    slot = slots[position]
+    others = [q for q in questions if q.pk != target.pk]
+
+    lines = [
+        f"Exam: {blueprint.title}",
+        f"Subject: {blueprint.subject} · Grade: {blueprint.grade}",
+        f"Language: write everything in {LANGUAGES[blueprint.language]}.",
+        "",
+        f"Write exactly 1 new question to replace question {order}:",
+        f"- Section: {slot.section}",
+        f"- Type: {slot.type_label} (question_type \"{slot.question_type}\")",
+        f"- Difficulty: {Question.Difficulty(slot.difficulty).label.lower()}",
+        f"- Marks: {slot.marks}" + (f", topic: {slot.topic}" if slot.topic else ""),
+    ]
+    if slot.sample:
+        lines.append(f"- Sample (style only, do not reuse): {slot.sample}")
+    if blueprint.guidance.strip():
+        lines.append(f"Additional guidance from the department: {blueprint.guidance.strip()}")
+    lines += ["", f"The question being replaced (write a different one): {target.text}",
+              "It must not repeat or resemble these questions already in the paper:",
+              *[f"- {q.text}" for q in others]]
+    messages = [{"role": "user", "content": [*_blueprint_documents(blueprint),
+                                             {"type": "text", "text": "\n".join(lines)}]}]
+
+    data = _ask_claude(FINAL_SYSTEM_PROMPT, messages, FINAL_SCHEMA, effort="high", purpose="final_question", user=user)
+    new = [q for q in data["questions"] if q.get("text", "").strip()]
+    if len(new) != 1:
+        raise GenerationError(f"Claude wrote {len(new)} questions instead of 1. Please try again.")
+    reply = {**new[0], "question_type": slot.question_type}
+
+    notes = []
+    earlier = find_similar(reply["text"], [(q.order, normalize(q.text)) for q in others])
+    if earlier is not None:
+        notes.append(f"Very similar to question {earlier}.")
+    if slot.sample and find_similar(reply["text"], [(0, normalize(slot.sample))]) is not None:
+        notes.append("Close to a sample question in the blueprint, so its author could predict it.")
+    notes.append(REGENERATED_NOTE)
+
+    with transaction.atomic():
+        current = FinalPaper.objects.select_for_update().get(pk=paper.pk)
+        if current.status == FinalPaper.Status.LOCKED:
+            raise GenerationError("This final paper is locked and can't be regenerated.")
+        FinalQuestion.objects.filter(pk=target.pk).update(
+            section=slot.section, question_type=slot.question_type, marks=slot.marks,
+            check_notes="\n".join(notes), **_final_fields(reply))
+    return FinalQuestion.objects.get(pk=target.pk)
+
+
+def _claim(paper):
+    """Mark the paper as being written. Call inside a transaction holding select_for_update on the paper."""
+    from django.utils import timezone
+
+    from .models import FinalPaper
+
+    if paper.status == FinalPaper.Status.LOCKED:
+        raise GenerationError("This final paper is locked and can't be regenerated.")
+    if paper.is_generating:
+        raise GenerationError("Claude is already writing this paper. You'll get a notification when it's ready.")
+    paper.generation_started_at, paper.generation_error = timezone.now(), ""
+    paper.save(update_fields=["generation_started_at", "generation_error"])
+
+
 def start_final_paper(blueprint, user):
     """Have Claude write the final paper in a background thread, since it can take several minutes and a web
     request would time out. The user gets a notification when it's done. Returns the FinalPaper."""
     from django.db import transaction
-    from django.utils import timezone
 
     from .models import FinalPaper
 
     with transaction.atomic():
         paper, _ = FinalPaper.objects.select_for_update().get_or_create(blueprint=blueprint)
-        if paper.status == FinalPaper.Status.LOCKED:
-            raise GenerationError("This final paper is locked and can't be regenerated.")
-        if paper.is_generating:
-            raise GenerationError("Claude is already writing this paper. You'll get a notification when it's ready.")
-        paper.generation_started_at, paper.generation_error = timezone.now(), ""
-        paper.save(update_fields=["generation_started_at", "generation_error"])
+        _claim(paper)
     record(user, Action.FINAL_STARTED, paper)
     threading.Thread(target=_in_thread, args=(write_final_paper, paper.pk, user.pk), daemon=True).start()
+    return paper
+
+
+def start_question_regeneration(paper, order, user):
+    """Like start_final_paper, for one question. Uses the same "being written" flag, so the paper can't be
+    regenerated twice at once."""
+    from django.db import transaction
+
+    from .models import FinalPaper
+
+    with transaction.atomic():
+        paper = FinalPaper.objects.select_for_update().get(pk=paper.pk)
+        _claim(paper)
+    record(user, Action.FINAL_STARTED, paper, details=f"Regenerating question {order}")
+    threading.Thread(target=_in_thread, args=(rewrite_final_question, paper.pk, order, user.pk),
+                     daemon=True).start()
     return paper
 
 
@@ -475,8 +601,9 @@ def _in_thread(func, *args):
         connection.close()  # each thread has its own database connection
 
 
-def write_final_paper(paper_pk, user_pk):
-    """The background part of start_final_paper: generate, record the outcome and notify the user."""
+def _run_and_report(paper_pk, user_pk, job, label):
+    """The background part: run job(paper, user), record the outcome and notify the user.
+    label names what was written in the notification, e.g. "Final paper" or "Question 3"."""
     from django.contrib.auth import get_user_model
     from django.urls import reverse
 
@@ -488,19 +615,32 @@ def write_final_paper(paper_pk, user_pk):
     paper = FinalPaper.objects.select_related("blueprint").get(pk=paper_pk)
     user = get_user_model().objects.get(pk=user_pk)
     try:
-        generate_final_paper(paper.blueprint, user)
+        job(paper, user)
         error = ""
     except GenerationError as exc:
         error = str(exc)
     except Exception:
-        logger.exception("Final paper generation failed for blueprint %s", paper.blueprint_id)
+        logger.exception("%s generation failed for blueprint %s", label, paper.blueprint_id)
         error = "Something went wrong while writing the paper. Please try again."
     FinalPaper.objects.filter(pk=paper_pk).update(generation_started_at=None, generation_error=error)
-    record(user, Action.FINAL_FAILED if error else Action.FINAL_GENERATED, paper, details=error)
+    record(user, Action.FINAL_FAILED if error else Action.FINAL_GENERATED, paper,
+           details=error or ("" if label == "Final paper" else label))
     url = reverse("admin:questionbank_finalpaper_change", args=[paper_pk])
     if error:
-        notify(user, f"Final paper not generated: {paper.blueprint.title}", body=error, url=url,
+        notify(user, f"{label} not generated: {paper.blueprint.title}", body=error, url=url,
                kind=Notification.Kind.WARNING)
     else:
-        notify(user, f"Final paper ready: {paper.blueprint.title}", body="Review the questions, then lock the paper.",
+        notify(user, f"{label} ready: {paper.blueprint.title}", body="Review the questions, then lock the paper.",
                url=url, kind=Notification.Kind.SUCCESS)
+
+
+def write_final_paper(paper_pk, user_pk):
+    """The background part of start_final_paper."""
+    _run_and_report(paper_pk, user_pk, lambda paper, user: generate_final_paper(paper.blueprint, user),
+                    "Final paper")
+
+
+def rewrite_final_question(paper_pk, order, user_pk):
+    """The background part of start_question_regeneration."""
+    _run_and_report(paper_pk, user_pk, lambda paper, user: regenerate_final_question(paper, order, user),
+                    f"Question {order}")

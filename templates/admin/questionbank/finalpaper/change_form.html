@@ -1,7 +1,7 @@
 {% extends "admin/change_form.html" %}
 {% load static %}
 
-{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-papers.css' %}">{% endblock %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-papers.css' %}?v=2">{% endblock %}
 
 {% block object-tools-items %}
   {% if final %}
@@ -30,14 +30,26 @@
   {% if final.generation_error %}
   <div class="wf-note wf-note--warn"><strong>The last attempt didn't work:</strong> {{ final.generation_error }}</div>
   {% endif %}
+  {% if paper_problems %}
+  <div class="wf-note wf-note--warn"><strong>Doesn't match the blueprint yet.</strong> Fix these before locking:
+    <ul>{% for p in paper_problems %}<li>{{ p }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
   <div class="wf-panel wf-panel--secure">
     <div>
       <strong>{{ final.questions.count }} questions · {{ final.total_marks }} marks</strong>
-      <p>Review and edit the questions below and save. When you're satisfied, lock the paper; locking can't be undone. Not happy? Regenerate a fresh set from the blueprint.</p>
+      <p>Review and edit the questions below and save. When you're satisfied, lock the paper; locking can't be undone. Not happy with one question? Regenerate just that one, or regenerate the whole set.</p>
     </div>
     <div class="wf-buttons">
+      <label class="wf-inline">Question
+        <select name="question_order" form="wf-form">
+          {% for q in final.questions.all %}<option value="{{ q.order }}">{{ q.order }}</option>{% endfor %}
+        </select>
+      </label>
+      <button type="submit" form="wf-form" name="_regenerate_one" class="wf-btn" data-loading="Starting…"
+        onclick="return confirm('Replace this one question with a new AI-generated question?')">Regenerate this question</button>
       <button type="submit" form="wf-form" name="_regenerate" class="wf-btn" data-loading="Starting…"
-        onclick="return confirm('Replace all questions with a new AI-generated set? Edits you made will be lost.')">Regenerate</button>
+        onclick="return confirm('Replace all questions with a new AI-generated set? Edits you made will be lost.')">Regenerate all</button>
       <button type="submit" form="wf-form" name="_lock" class="wf-btn wf-btn--primary"
         onclick="return confirm('Lock this as the final paper? It can no longer be edited or regenerated.')">Lock as final</button>
     </div>
