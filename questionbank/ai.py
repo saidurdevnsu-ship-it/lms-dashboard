@@ -164,7 +164,13 @@ def generate_questions(*, subject, grade, topic, question_type, difficulty, coun
         q.duplicate_of_id = find_similar(q.text, bank)
         batch.append((len(batch), normalize(q.text)))
         kept.append(q)
-    return Question.objects.bulk_create(kept)
+    # Saved one by one, not with bulk_create: on MySQL bulk_create returns the questions without their new ids,
+    # and callers need them. A batch is only a handful of questions.
+    from django.db import transaction
+    with transaction.atomic():
+        for q in kept:
+            q.save()
+    return kept
 
 
 def _ask_claude(system, messages, schema, *, effort="medium"):

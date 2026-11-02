@@ -38,6 +38,8 @@ switch on what is set:
 - `DB_NAME` set → MySQL (utf8mb4, read committed); otherwise `db.sqlite3`. MySQL has no conditional unique constraints, so the one on `SubjectAssignment` is also enforced in admin form validation.
   `mysqlclient` is in `requirements.txt`, so a Linux server needs the MySQL client headers and a compiler to install it (e.g. `default-libmysqlclient-dev build-essential pkg-config` on Debian/Ubuntu), even if it stays on SQLite.
   `models.W036` is silenced for MySQL; `questionbank.tests` lists the conditional constraints allowed to exist, so a new one fails a test until it's also enforced by validation.
+  MySQL needs its time zone tables loaded, or date-based admin pages (the audit log's date filter) fail with "invalid datetime value". Linux: `mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root mysql`. Windows: load `timezone_posix.sql` from https://dev.mysql.com/downloads/timezones.html into the `mysql` schema. Check: `SELECT CONVERT_TZ(NOW(), 'UTC', 'Asia/Dhaka')` isn't NULL.
+  `bulk_create` doesn't return new ids on MySQL. Don't use the objects it returns for their `pk`; save one by one (or re-query) when callers need ids.
 - `EMAIL_HOST` set → SMTP; otherwise emails print to the console. This uses Django 6's `MAILERS` setting, not `EMAIL_BACKEND`.
 - `DJANGO_DEBUG=true` for local development. `SITE_URL` sets the absolute links in emails, `ALLOWED_HOSTS` and CSRF origins.
 - `ANTHROPIC_API_KEY` and `QUESTION_GENERATION_MODEL` (default `claude-opus-5-5`) for AI generation. `MAKE_WEBHOOK_URL` / `MAKE_MAILHOOK_ADDRESS` for Make.com events.

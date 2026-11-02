@@ -28,8 +28,9 @@ def login_failed(sender, credentials, request=None, **kwargs):
 
 
 @receiver(post_save, sender=LogEntry)
-def admin_change(sender, instance, created, **kwargs):
-    if not created:
+def admin_change(sender, instance, created, raw=False, **kwargs):
+    # raw: loaddata re-saving old history (e.g. copying the data to another database), not a new admin action.
+    if not created or raw:
         return
     model = instance.content_type.model_class() if instance.content_type_id else None
     record(

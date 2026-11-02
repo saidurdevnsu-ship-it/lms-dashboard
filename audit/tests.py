@@ -1,4 +1,6 @@
+from django.contrib.admin.models import LogEntry
 from django.contrib.auth import get_user_model
+from django.core import serializers
 from django.test import TestCase
 from django.urls import reverse
 
@@ -24,6 +26,18 @@ class AuditLogTests(TestCase):
         self.client.post(reverse("admin:questionbank_subject_add"), {"name": "Physics", "code": "PHY"})
         entry = AuditEvent.objects.get(action=Action.ADDED)
         self.assertEqual((entry.actor_name, entry.target_type, entry.target), ("boss", "subject", "Physics"))
+
+    def test_loading_old_admin_history_is_not_logged_again(self):
+        # Copying data between databases (loaddata) re-saves old admin log entries; they aren't new actions.
+        self.client.force_login(self.boss)
+        self.client.post(reverse("admin:questionbank_subject_add"), {"name": "Physics", "code": "PHY"})
+        fixture = serializers.serialize("json", LogEntry.objects.all())
+        LogEntry.objects.all().delete()
+        before = AuditEvent.objects.count()
+        for obj in serializers.deserialize("json", fixture):
+            obj.save()  # what loaddata does: a raw save
+        self.assertEqual(LogEntry.objects.count(), 1)
+        self.assertEqual(AuditEvent.objects.count(), before)
 
     def test_log_is_read_only(self):
         self.client.force_login(self.boss)

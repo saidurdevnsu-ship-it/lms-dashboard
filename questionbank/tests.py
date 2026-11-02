@@ -155,6 +155,12 @@ class QualityCheckTests(BlueprintTestCase):
         self.assertEqual(created[0].duplicate_of_id, first.pk)
         self.assertIsNone(created[1].duplicate_of_id)
 
+    def test_generated_questions_come_back_saved(self):
+        # bulk_create can't return new ids on MySQL; callers must still get saved questions with their ids.
+        created = self.generate_questions(["Name the green pigment in leaves.", "What do roots absorb?"])
+        self.assertTrue(all(q.pk for q in created))
+        self.assertEqual({q.pk for q in created}, set(Question.objects.values_list("pk", flat=True)))
+
     def test_final_paper_flags_copied_samples_repeats_and_ai_review_findings(self):
         item = self.bp.items.get(section="A")
         item.sample_question = "Which gas do plants release during photosynthesis?"
