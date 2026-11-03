@@ -129,7 +129,7 @@ class KnowledgeSourceAdmin(SubjectScopeMixin, admin.ModelAdmin):
     @admin.display(description="Extracted text")
     def text_preview(self, obj):
         if not obj.content_text:
-            return "No text found yet. Scanned PDFs have no text layer; Claude still reads them as images."
+            return "No text found yet. Scanned PDFs have no text layer; the AI still reads them as images."
         more = " …" if len(obj.content_text) > 1500 else ""
         return format_html('<div style="white-space:pre-wrap;max-height:16em;overflow:auto">{}{}</div>',
                            obj.content_text[:1500], more)
@@ -423,7 +423,7 @@ class QuestionBlueprintAdmin(SubjectScopeMixin, admin.ModelAdmin):
         sets = [
             (None, {"fields": main}),
             ("Samples & guidance", {"fields": ["materials", "sample_file", "instructions", "guidance"],
-                                    "description": "Add each section below with an optional sample question. Claude "
+                                    "description": "Add each section below with an optional sample question. The AI "
                                                    "writes new questions in that style; samples are never reused."}),
         ]
         if obj:
@@ -534,7 +534,7 @@ class QuestionBlueprintAdmin(SubjectScopeMixin, admin.ModelAdmin):
                 if not can_manage_final(user) or bp.status != QuestionBlueprint.Status.APPROVED:
                     raise PermissionDenied
                 start_final_paper(bp, user)  # refuses people who wrote, edited or reviewed this blueprint
-                msg = ("Claude is writing the final paper. It takes a few minutes; you'll get a notification "
+                msg = ("The AI is writing the final paper. It takes a few minutes; you'll get a notification "
                        "when it's ready.")
         except (workflow.WorkflowError, GenerationError) as exc:
             self.message_user(request, str(exc), messages.ERROR)
@@ -653,17 +653,17 @@ class FinalPaperAdmin(admin.ModelAdmin):
                     if not paper.questions.filter(order=order).exists():
                         raise GenerationError(f"This paper has no question {order}.")
                     start_question_regeneration(paper, order, request.user)
-                    self.message_user(request, f"Claude is writing a new question {order}. You'll get a "
+                    self.message_user(request, f"The AI is writing a new question {order}. You'll get a "
                                                "notification when it's ready.", messages.SUCCESS)
                 else:
                     start_final_paper(paper.blueprint, request.user)
-                    self.message_user(request, "Claude is writing a new set of questions. It takes a few minutes; "
+                    self.message_user(request, "The AI is writing a new set of questions. It takes a few minutes; "
                                                "you'll get a notification when it's ready.", messages.SUCCESS)
             except (workflow.WorkflowError, GenerationError) as exc:
                 self.message_user(request, str(exc), messages.ERROR)
             return HttpResponseRedirect(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
         final = self.get_object(request, object_id) if object_id else None
-        extra_context = {**(extra_context or {}), "final": final,
+        extra_context = {**(extra_context or {}), "final": final, "claude": claude_status(),
                          "paper_problems": workflow.paper_problems(final) if final else []}
         return super().changeform_view(request, object_id, form_url, extra_context)
 

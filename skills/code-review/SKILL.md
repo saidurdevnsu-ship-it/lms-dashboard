@@ -25,7 +25,9 @@ Read first: `docs/architecture.md` (helpers, flows), `docs/database-design.md` (
   `WorkflowError` / `GenerationError` / `LeaveError` with plain-language messages for school staff.
 - Uses `audit.services.record`, `notifications.services.notify` / `users_with_perm`, `notifications.mail.send_email`,
   `notifications.make.send_event` — no ad-hoc email, HTTP or Anthropic clients.
-- Claude only via `ai._ask_claude`; long work via `threading.Thread` + `_in_thread` + `notify`.
+- AI only via `ai._ask_claude` → `llm.ask` (no direct provider calls); long work via `threading.Thread` + `_in_thread` + `notify`.
+- AI provider changes keep the guards: final-paper purposes refused on Gemini without `GEMINI_PAID_TIER`,
+  `store=False` on every Gemini request, PDFs inline (no Files API), and no prompt/reply text in logs.
 - Docstrings explain why. Workspace hiding still works for new admin apps/URLs (`learning/workspaces.py`).
 
 **Database**
@@ -36,6 +38,6 @@ Read first: `docs/architecture.md` (helpers, flows), `docs/database-design.md` (
 **Tests and hygiene**
 - New behaviour has tests that mock `_ask_claude` / `ai.threading.Thread` and use
   `@override_settings(MAKE_WEBHOOK_URL="", MAKE_MAILHOOK_ADDRESS="")` where sending is possible.
-- Both backends pass (`skills/testing/SKILL.md`).
+- Both backends pass with the full test prefix incl. the blank `AI_*` / `GEMINI_*` values (`skills/testing/SKILL.md`).
 - No secrets, `.env`, `db.sqlite3`, `backups/`, `media/`, `.idea/` in the diff. Commit message: one imperative line
   describing the user-visible change.

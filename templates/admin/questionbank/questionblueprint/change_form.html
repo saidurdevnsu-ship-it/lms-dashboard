@@ -1,7 +1,7 @@
 {% extends "admin/change_form.html" %}
 {% load static %}
 
-{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-papers.css' %}">{% endblock %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-papers.css' %}?v=3">{% endblock %}
 
 {% block form_top %}
 {% if bp %}
@@ -53,7 +53,7 @@
 
   {% if is_controller %}
     {% if final.is_generating %}
-    <div class="wf-note wf-note--secure">⏳ <strong>Claude is writing the final paper</strong> (started {{ final.generation_started_at|timesince }} ago). It takes a few minutes; you'll get a notification when it's ready.</div>
+    <div class="wf-note wf-note--secure">⏳ <strong>The AI is writing the final paper</strong> (started {{ final.generation_started_at|timesince }} ago). It takes a few minutes; you'll get a notification when it's ready.</div>
     {% elif final and final.questions.exists %}
     <div class="wf-panel wf-panel--secure">
       <div>
@@ -69,10 +69,14 @@
     <div class="wf-panel wf-panel--secure">
       <div>
         <strong>Ready for the final paper</strong>
-        <p>Claude writes new questions that follow this blueprint, grounded in the {{ bp.subject }} / {{ bp.grade }} books. Teachers and the HOD won't see them. It takes a few minutes and runs in the background; you'll get a notification when it's ready.</p>
-        {% include "admin/questionbank/_claude_status.html" %}
+        <p>The AI writes new questions that follow this blueprint, grounded in the {{ bp.subject }} / {{ bp.grade }} books. Teachers and the HOD won't see them. It takes a few minutes and runs in the background; you'll get a notification when it's ready.</p>
+        {% include "admin/questionbank/_claude_status.html" with show_final=True %}
       </div>
+      {% if claude.final_allowed %}
       <button type="submit" form="wf-form" name="_generate_final" class="wf-btn wf-btn--primary" data-loading="Starting…">Generate final paper with AI</button>
+      {% else %}
+      <button type="button" class="wf-btn wf-btn--primary wf-btn--blocked" disabled aria-describedby="ai-final-blocked">Generate final paper with AI</button>
+      {% endif %}
     </div>
     {% endif %}
   {% elif bp.status == "approved" %}

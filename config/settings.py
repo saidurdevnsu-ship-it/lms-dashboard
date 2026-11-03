@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -195,6 +197,21 @@ QUESTION_GENERATION_MODEL = os.environ.get('QUESTION_GENERATION_MODEL', 'claude-
 # Needed only when the API key isn't scoped to a workspace (keys starting sk-ant-usr-): the wrkspc_... ID from
 # platform.claude.com → Settings → Workspaces. Not a secret.
 ANTHROPIC_WORKSPACE_ID = os.environ.get('ANTHROPIC_WORKSPACE_ID', '')
+
+# Which AI writes questions: 'anthropic' (Claude, the default) or 'gemini' (needs GEMINI_API_KEY, read from the
+# environment only and passed to the client explicitly). A typo stops the server at start-up instead of failing
+# later in a background thread.
+AI_PROVIDER = (os.environ.get('AI_PROVIDER') or 'anthropic').strip().lower()
+if AI_PROVIDER not in ('anthropic', 'gemini'):
+    raise ImproperlyConfigured(f"AI_PROVIDER must be 'anthropic' or 'gemini', not {AI_PROVIDER!r}.")
+# Model for practice (bank) questions, and for confidential final papers, their review and single-question
+# rewrites. Empty = the provider's default (Anthropic: QUESTION_GENERATION_MODEL for both; Gemini:
+# gemini-3.8-flash and gemini-4-argon), resolved in questionbank.llm.model_for.
+AI_MODEL = os.environ.get('AI_MODEL', '').strip()
+AI_FINAL_MODEL = os.environ.get('AI_FINAL_MODEL', '').strip()
+# Gemini's free tier lets Google use prompts for training and human review, so confidential final papers are only
+# sent to Gemini once the owner confirms billing is on (true/1). Practice questions work either way.
+GEMINI_PAID_TIER = os.environ.get('GEMINI_PAID_TIER', '').strip().lower() in ('true', '1')
 
 # Make.com mailhook: an email address that starts a Make scenario. Kept in .env because anyone who knows it can
 # trigger the scenario.

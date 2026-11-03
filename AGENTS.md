@@ -10,14 +10,15 @@ else SQLite. Terminal is git-bash: native tools need `C:/...` paths, not `/tmp`.
 ## Test (always with blanked integrations — `.env` holds live webhook and API values)
 
 ```bash
-env MAKE_WEBHOOK_URL= MAKE_MAILHOOK_ADDRESS= ANTHROPIC_API_KEY= EMAIL_HOST= venv/Scripts/python.exe manage.py test --noinput
+env MAKE_WEBHOOK_URL= MAKE_MAILHOOK_ADDRESS= ANTHROPIC_API_KEY= EMAIL_HOST= AI_PROVIDER= AI_MODEL= AI_FINAL_MODEL= GEMINI_API_KEY= GEMINI_PAID_TIER= venv/Scripts/python.exe manage.py test --noinput
 # add DB_NAME= after `env` for SQLite; run both backends before calling work done
+# the AI_* / GEMINI_* blanks matter: a .env with AI_PROVIDER=gemini would otherwise route tests to Gemini
 ```
 
 ## Hard rules
 
 - **Ask first** for: `git commit`, `git push` (separate yes), `migrate` on the real DB (back up to `backups/`
-  first), package installs, paid Claude calls (`check_claude`), real Make sends (`send_make_test`).
+  first), package installs, paid AI calls (`check_ai`, alias `check_claude`), real Make sends (`send_make_test`).
 - **Never print** `.env` values or MySQL credentials (`C:\Users\User\AppData\Local\MySQL-dev\`).
 - **Final papers are confidential**: only `questionbank.manage_final_papers` (Exam Controller role) and superusers
   see them. Keep `keep_final_papers_confidential`; notifications/audit/emails never include final-paper questions.
@@ -26,13 +27,13 @@ env MAKE_WEBHOOK_URL= MAKE_MAILHOOK_ADDRESS= ANTHROPIC_API_KEY= EMAIL_HOST= venv
   (`learning.approvals.is_own` / `others_only`).
 - **Subject scope**: Academic querysets go through `questionbank.scope.in_scope` / `covers`.
 - **Use the helpers**: `audit.services.record`, `notifications.services.notify` / `users_with_perm`,
-  `notifications.mail.send_email`, `notifications.make.send_event`. Claude only via `questionbank.ai._ask_claude`;
-  slow work in `threading.Thread` via `_in_thread`, then `notify`.
+  `notifications.mail.send_email`, `notifications.make.send_event`. AI (Claude or Gemini) only via
+  `questionbank.ai._ask_claude` → `questionbank.llm.ask` (the name is kept for both providers); slow work in `threading.Thread` via `_in_thread`, then `notify`.
 - **Business rules** live in services (`questionbank/workflow.py`, `hr/services.py`) raising `WorkflowError` /
   `GenerationError` / `LeaveError` with plain-language messages for school staff. Docstrings explain *why*.
 - **MySQL-safe**: no conditional unique constraints without validation; case-insensitive collation; `bulk_create`
   returns no ids; signal receivers that write skip `raw=True`.
-- **Tests** mock `ai._ask_claude`, patch `ai.threading.Thread`, and use
+- **Tests** mock `ai._ask_claude` (never a real provider client), patch `ai.threading.Thread`, and use
   `@override_settings(MAKE_WEBHOOK_URL="", MAKE_MAILHOOK_ADDRESS="")` where sending is possible.
 - **Commits**: one short imperative line describing the user-visible change, optional bullet body.
 

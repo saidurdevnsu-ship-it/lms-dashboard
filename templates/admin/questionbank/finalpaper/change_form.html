@@ -1,7 +1,7 @@
 {% extends "admin/change_form.html" %}
 {% load static %}
 
-{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-papers.css' %}?v=2">{% endblock %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-papers.css' %}?v=3">{% endblock %}
 
 {% block object-tools-items %}
   {% if final %}
@@ -25,7 +25,7 @@
   <div class="wf-note {% if 'flagged' in final.check_summary or "couldn't" in final.check_summary %}wf-note--warn{% else %}wf-note--ok{% endif %}"><strong>Automatic checks:</strong> {{ final.check_summary }}</div>
   {% endif %}
   {% if final.is_generating %}
-  <div class="wf-note wf-note--secure">⏳ <strong>Claude is writing the questions</strong> (started {{ final.generation_started_at|timesince }} ago). You'll get a notification when they're ready; then refresh this page.</div>
+  <div class="wf-note wf-note--secure">⏳ <strong>The AI is writing the questions</strong> (started {{ final.generation_started_at|timesince }} ago). You'll get a notification when they're ready; then refresh this page.</div>
   {% elif final.status != "locked" %}
   {% if final.generation_error %}
   <div class="wf-note wf-note--warn"><strong>The last attempt didn't work:</strong> {{ final.generation_error }}</div>
@@ -39,8 +39,10 @@
     <div>
       <strong>{{ final.questions.count }} questions · {{ final.total_marks }} marks</strong>
       <p>Review and edit the questions below and save. When you're satisfied, lock the paper; locking can't be undone. Not happy with one question? Regenerate just that one, or regenerate the whole set.</p>
+      {% include "admin/questionbank/_claude_status.html" with show_final=True %}
     </div>
     <div class="wf-buttons">
+      {% if claude.final_allowed %}
       <label class="wf-inline">Question
         <select name="question_order" form="wf-form">
           {% for q in final.questions.all %}<option value="{{ q.order }}">{{ q.order }}</option>{% endfor %}
@@ -50,6 +52,10 @@
         onclick="return confirm('Replace this one question with a new AI-generated question?')">Regenerate this question</button>
       <button type="submit" form="wf-form" name="_regenerate" class="wf-btn" data-loading="Starting…"
         onclick="return confirm('Replace all questions with a new AI-generated set? Edits you made will be lost.')">Regenerate all</button>
+      {% else %}
+      <button type="button" class="wf-btn wf-btn--blocked" disabled aria-describedby="ai-final-blocked">Regenerate this question</button>
+      <button type="button" class="wf-btn wf-btn--blocked" disabled aria-describedby="ai-final-blocked">Regenerate all</button>
+      {% endif %}
       <button type="submit" form="wf-form" name="_lock" class="wf-btn wf-btn--primary"
         onclick="return confirm('Lock this as the final paper? It can no longer be edited or regenerated.')">Lock as final</button>
     </div>

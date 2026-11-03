@@ -86,6 +86,7 @@
 .wf-btn--primary, a.wf-btn--primary:link, a.wf-btn--primary:visited { background: var(--sts-brand-600); color: #fff; box-shadow: none; }
 .wf-btn--primary:hover { background: var(--sts-brand-700); color: #fff; }
 .wf-btn:disabled { opacity: 0.7; cursor: progress; }
+.wf-btn--blocked:disabled { cursor: not-allowed; }
 
 .wf-note {
   margin-bottom: 12px;

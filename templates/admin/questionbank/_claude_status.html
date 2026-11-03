@@ -1,8 +1,17 @@
+{% comment %}The active AI provider's status (claude = questionbank.ai.ai_status()). On final-paper pages include it
+with show_final=True to also show the final-paper model and whether this provider may write final papers.{% endcomment %}
 <p class="ai-status {% if claude.configured %}ai-status--ok{% else %}ai-status--off{% endif %}" role="status">
   <span class="ai-status__dot" aria-hidden="true"></span>
   {% if claude.configured %}
-    Claude connected · model <code>{{ claude.model }}</code>
+    AI connected: {{ claude.label }} · model <code>{{ claude.model }}</code>{% if show_final and claude.final_model != claude.model %} · final papers <code>{{ claude.final_model }}</code>{% endif %}
   {% else %}
-    Claude isn't connected yet. Add <code>ANTHROPIC_API_KEY</code> to the <code>.env</code> file on the server, then restart.
+    The AI ({{ claude.label }}) isn't connected yet. Add <code>{% if claude.provider == "gemini" %}GEMINI_API_KEY{% else %}ANTHROPIC_API_KEY{% endif %}</code> to the <code>.env</code> file on the server, then restart.
   {% endif %}
 </p>
+{% if show_final %}
+{% if not claude.final_allowed %}
+<p class="wf-note wf-note--warn" id="ai-final-blocked"><strong>Final papers are switched off.</strong> Final papers can't be written with {{ claude.label }} until the paid plan is switched on (GEMINI_PAID_TIER).</p>
+{% elif claude.provider == "gemini" %}
+<p class="wf-note">Final papers are processed by Google ({{ claude.label }}).</p>
+{% endif %}
+{% endif %}

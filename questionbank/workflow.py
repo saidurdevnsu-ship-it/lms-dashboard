@@ -162,7 +162,7 @@ def lock_final(paper, user):
     if paper.status == FinalPaper.Status.LOCKED:
         raise WorkflowError("This final paper is already locked.")
     if paper.is_generating:
-        raise WorkflowError("Claude is still writing this paper. Lock it once it's ready.")
+        raise WorkflowError("The AI is still writing this paper. Lock it once it's ready.")
     if not paper.questions.exists():
         raise WorkflowError("Generate the paper before locking it.")
     problems = paper_problems(paper)

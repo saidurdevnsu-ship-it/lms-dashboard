@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import tempfile
 from datetime import date, timedelta
@@ -33,6 +34,10 @@ from .reminders import ensure_reminders
 
 MEDIA = tempfile.mkdtemp()
 
+# The AI settings are read from .env (setdefault), so a developer's AI_PROVIDER=gemini would otherwise route these
+# tests to Gemini. Pin the provider the tests were written for; Gemini tests override it in test_llm.py.
+AI_DEFAULTS = dict(AI_PROVIDER="anthropic", AI_MODEL="", AI_FINAL_MODEL="", GEMINI_PAID_TIER=False)
+
 
 def claude_reply(n):
     return {"questions": [
@@ -42,7 +47,7 @@ def claude_reply(n):
     ]}
 
 
-@override_settings(MEDIA_ROOT=MEDIA)
+@override_settings(MEDIA_ROOT=MEDIA, **AI_DEFAULTS)
 class BlueprintTestCase(TestCase):
     @classmethod
     def tearDownClass(cls):
@@ -215,7 +220,7 @@ class FinalPaperTests(BlueprintTestCase):
         self.assertContains(self.client.get(url), 'name="_regenerate_one"')
         with mock.patch.object(ai.threading, "Thread"):
             response = self.client.post(url, {"_regenerate_one": "1", "question_order": "2"}, follow=True)
-        self.assertContains(response, "Claude is writing a new question 2")
+        self.assertContains(response, "The AI is writing a new question 2")
         paper.refresh_from_db()
         self.assertTrue(paper.is_generating)
 
@@ -267,7 +272,7 @@ class AIUsageTests(BlueprintTestCase):
         stream = mock.MagicMock()
         stream.__enter__.return_value.get_final_message.return_value = self.fake_response('{"questions": []}')
         with mock.patch.object(ai.anthropic, "Anthropic") as client, \
-                mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+                mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key", "GEMINI_API_KEY": ""}):
             client.return_value.beta.messages.stream.return_value = stream
             return ai._ask_claude("system", [], ai.OUTPUT_SCHEMA, **kwargs)
 
@@ -336,6 +341,7 @@ class AuthorCannotSeeOwnPaperTests(BlueprintTestCase):
         self.assertEqual(self.client.get(reverse("admin:questionbank_finalpaper_change", args=[paper.pk])).status_code, 200)
 
 
+@override_settings(**AI_DEFAULTS)
 class ClaudeClientTests(TestCase):
     """Keys that aren't scoped to a workspace need the anthropic-workspace-id header on every request."""
 
@@ -354,7 +360,7 @@ class ClaudeClientTests(TestCase):
         client.assert_called_once_with()
 
     def test_missing_key_gives_a_plain_message_instead_of_crashing(self):
-        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}):
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": ""}):
             with self.assertRaisesMessage(ai.GenerationError, "ANTHROPIC_API_KEY"):
                 ai._ask_claude("system", [], ai.OUTPUT_SCHEMA, purpose="questions")
 
@@ -837,3 +843,80 @@ class QuestionApprovalTests(BlueprintTestCase):
             "difficulty": "medium", "text": "Teacher's question, reworded", "options": "[]", "answer": "A",
             "explanation": "", "source_reference": ""})
         self.assertEqual(self.status(self.teachers_q), Question.Status.DRAFT)
+
+
+class ProviderStatusPageTests(BlueprintTestCase):
+    """The status box names the active provider and model; under Gemini the final-paper pages say papers go to
+    Google, and without GEMINI_PAID_TIER the generate/regenerate buttons are disabled with a plain reason."""
+
+    GEMINI = {"AI_PROVIDER": "gemini", "AI_MODEL": "gemini-bank-test", "AI_FINAL_MODEL": "gemini-final-test"}
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_login(self.controller)
+        self.bp_url = reverse("admin:questionbank_questionblueprint_change", args=[self.bp.pk])
+
+    def make_paper(self):
+        with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(3)):
+            return ai.generate_final_paper(self.bp, self.controller)
+
+    @override_settings(AI_PROVIDER="anthropic", AI_MODEL="", AI_FINAL_MODEL="", QUESTION_GENERATION_MODEL="claude-test")
+    @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test"})
+    def test_default_provider_shows_claude_and_allows_final_papers(self):
+        response = self.client.get(self.bp_url)
+        self.assertContains(response, "AI connected: Claude · model <code>claude-test</code>")
+        self.assertContains(response, 'name="_generate_final"')
+        self.assertNotContains(response, "processed by Google")
+        self.assertNotContains(response, "GEMINI_PAID_TIER")
+        self.assertNotContains(response, "Claude is")
+
+    @override_settings(AI_PROVIDER="anthropic")
+    @mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""})
+    def test_missing_key_names_the_providers_key(self):
+        response = self.client.get(self.bp_url)
+        self.assertContains(response, "The AI (Claude) isn't connected yet. Add <code>ANTHROPIC_API_KEY</code>")
+        with self.settings(**self.GEMINI), mock.patch.dict(os.environ, {"GEMINI_API_KEY": ""}):
+            response = self.client.get(self.bp_url)
+        self.assertContains(response, "The AI (Gemini) isn't connected yet. Add <code>GEMINI_API_KEY</code>")
+
+    @mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test"})
+    def test_gemini_free_tier_blocks_generate_final_with_reason(self):
+        with self.settings(**self.GEMINI, GEMINI_PAID_TIER=False):
+            response = self.client.get(self.bp_url)
+        self.assertContains(response, "AI connected: Gemini · model <code>gemini-bank-test</code>")
+        self.assertContains(response, "final papers <code>gemini-final-test</code>")
+        self.assertContains(response, "Final papers can't be written with Gemini until the paid plan is switched on "
+                                      "(GEMINI_PAID_TIER).")
+        self.assertNotContains(response, 'name="_generate_final"')
+        self.assertContains(response, 'disabled aria-describedby="ai-final-blocked"')
+
+    @mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test"})
+    def test_gemini_paid_tier_allows_generate_final_with_google_note(self):
+        with self.settings(**self.GEMINI, GEMINI_PAID_TIER=True):
+            response = self.client.get(self.bp_url)
+        self.assertContains(response, 'name="_generate_final"')
+        self.assertContains(response, "Final papers are processed by Google (Gemini).")
+        self.assertNotContains(response, "GEMINI_PAID_TIER")
+
+    @mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test"})
+    def test_final_paper_page_under_gemini(self):
+        paper = self.make_paper()
+        url = reverse("admin:questionbank_finalpaper_change", args=[paper.pk])
+        with self.settings(**self.GEMINI, GEMINI_PAID_TIER=True):
+            response = self.client.get(url)
+        self.assertContains(response, "Final papers are processed by Google (Gemini).")
+        self.assertContains(response, 'name="_regenerate_one"')
+        self.assertContains(response, 'name="_regenerate"')
+        with self.settings(**self.GEMINI, GEMINI_PAID_TIER=False):
+            response = self.client.get(url)
+        self.assertContains(response, "Final papers can't be written with Gemini until the paid plan is switched on")
+        self.assertNotContains(response, 'name="_regenerate_one"')
+        self.assertNotContains(response, 'name="_regenerate"')
+        self.assertContains(response, 'name="_lock"')  # locking an existing paper sends nothing to the AI
+
+    @override_settings(AI_PROVIDER="anthropic")
+    def test_final_paper_page_on_anthropic_has_no_google_note(self):
+        paper = self.make_paper()
+        response = self.client.get(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
+        self.assertContains(response, 'name="_regenerate"')
+        self.assertNotContains(response, "processed by Google")

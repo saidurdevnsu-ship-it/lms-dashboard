@@ -1,15 +1,14 @@
-"""Question generation with Claude, grounded in the uploaded books for a subject and grade."""
+"""Question generation with the AI provider (Claude or Gemini, see questionbank.llm), grounded in the uploaded
+books for a subject and grade."""
 
 import base64
-import json
 import logging
 import threading
 
-import anthropic
-from django.conf import settings
-
+import anthropic  # noqa: F401  (kept so tests can patch ai.anthropic.Anthropic, the same module llm uses)
 from audit.services import Action, record
 
+from . import llm
 from .checks import find_similar, normalize
 from .documents import extract_text
 from .models import KnowledgeSource, Question
@@ -63,19 +62,26 @@ OUTPUT_SCHEMA = {
 LANGUAGES = {"en": "English", "bn": "Bangla (বাংলা)"}
 
 
-class GenerationError(Exception):
-    """A problem the user can act on; the message is shown in the admin."""
+# One exception class for the whole app: llm raises it, and admin.py / tests catch ai.GenerationError.
+GenerationError = llm.GenerationError
+claude_client = llm.claude_client
+final_papers_allowed = llm.final_papers_allowed
+
+
+def ai_status():
+    """For display: provider, its label, whether its API key is set, the bank and final models, and whether final
+    papers may be written (False on Gemini without GEMINI_PAID_TIER). Makes no API call."""
+    return llm.status()
 
 
 def claude_status():
-    """For display: whether an API key is configured and which model is used. Makes no API call."""
-    import os
-
-    return {"configured": bool(os.environ.get("ANTHROPIC_API_KEY")), "model": settings.QUESTION_GENERATION_MODEL}
+    """The older name templates use (claude.configured, claude.model); same dict as ai_status()."""
+    return ai_status()
 
 
 def _source_block(source):
-    """PDFs go to Claude as PDFs, so it also sees figures and tables; other files as their extracted text."""
+    """PDFs go to the AI as PDFs, so it also sees figures and tables; other files as their extracted text. The block
+    uses Anthropic's document format; llm translates it for Gemini."""
     with source.file.open("rb") as fh:
         if source.is_pdf:
             doc_source = {
@@ -157,9 +163,9 @@ def _examples_text(examples):
 
 def generate_questions(*, subject, grade, topic, question_type, difficulty, count, language, user, sources=None,
                        examples=None):
-    """Ask Claude for questions and save them as drafts. Returns the saved Question objects.
+    """Ask the AI for questions and save them as drafts. Returns the saved Question objects.
 
-    sources limits Claude to chosen materials (e.g. some chapters); by default it reads all active ones.
+    sources limits the AI to chosen materials (e.g. some chapters); by default it reads all active ones.
     examples are approved bank questions to imitate; by default approved_examples() picks them.
     """
     sources = list(sources) if sources else list(
@@ -219,92 +225,20 @@ def generate_questions(*, subject, grade, topic, question_type, difficulty, coun
     return kept
 
 
-def _record_usage(response, purpose, user):
-    """Save the request's token counts. Never raises: measuring must not break generation."""
-    from .models import AIUsage
-
-    try:
-        usage = response.usage
-        AIUsage.objects.create(
-            user=user if getattr(user, "pk", None) else None, purpose=purpose,
-            model=(getattr(response, "model", "") or settings.QUESTION_GENERATION_MODEL)[:50],
-            input_tokens=usage.input_tokens or 0, output_tokens=usage.output_tokens or 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-            request_id=(getattr(response, "_request_id", "") or "")[:100],
-        )
-    except Exception:
-        logger.exception("Couldn't record AI usage")
+def _ask_model(system, messages, schema, *, effort="medium", purpose, user=None, final=False):
+    """Send one structured-output request to the configured provider and return the parsed JSON object.
+    final=True (confidential final papers, their review pass, single-question rewrites) uses AI_FINAL_MODEL and is
+    refused on Gemini's free tier. purpose (an AIUsage.Purpose value) and user label the recorded token counts."""
+    return llm.ask(system, messages, schema, effort=effort, purpose=purpose, user=user, final=final)
 
 
-def claude_client():
-    """The Anthropic client. Keys that aren't scoped to a workspace must name one on every request, so
-    ANTHROPIC_WORKSPACE_ID (if set) is sent as the anthropic-workspace-id header."""
-    import os
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise GenerationError("The Claude API key isn't set. Add ANTHROPIC_API_KEY to the .env file and restart.")
-    if settings.ANTHROPIC_WORKSPACE_ID:
-        return anthropic.Anthropic(default_headers={"anthropic-workspace-id": settings.ANTHROPIC_WORKSPACE_ID})
-    return anthropic.Anthropic()
-
-
-def _ask_claude(system, messages, schema, *, effort="medium", purpose, user=None):
-    """Send one structured-output request to Claude and return the parsed JSON object. purpose (an
-    AIUsage.Purpose value) and user label the token counts recorded for cost tracking."""
-    client = claude_client()
-    try:
-        with client.beta.messages.stream(
-            model=settings.QUESTION_GENERATION_MODEL,
-            max_tokens=64000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            system=system,
-            output_config={
-                "effort": effort,
-                "format": {"type": "json_schema", "schema": schema},
-            },
-            messages=messages,
-        ) as stream:
-            response = stream.get_final_message()
-    except anthropic.AuthenticationError:
-        raise GenerationError("The Claude API key is missing or invalid. Set ANTHROPIC_API_KEY on the server.")
-    except anthropic.PermissionDeniedError:
-        raise GenerationError("The Claude API key doesn't have access to this model.")
-    except anthropic.RateLimitError:
-        raise GenerationError("Claude is busy right now (rate limit). Please try again in a minute.")
-    except anthropic.BadRequestError as exc:
-        logger.warning("Claude rejected the question request: %s", exc)
-        raise GenerationError(f"Claude couldn't process this request: {exc.message}")
-    except anthropic.APIStatusError as exc:
-        logger.warning("Claude API error %s: %s", exc.status_code, exc)
-        raise GenerationError("Claude returned a server error. Please try again shortly.")
-    except anthropic.APIConnectionError:
-        raise GenerationError("Couldn't reach the Claude API. Check the server's internet connection.")
-    except anthropic.AnthropicError as exc:
-        logger.warning("Claude client error: %s", exc)
-        raise GenerationError("The Claude API isn't configured on this server. Set ANTHROPIC_API_KEY.")
-
-    logger.info(
-        "Question generation %s: %s in / %s out tokens, %s cached",
-        response._request_id, response.usage.input_tokens, response.usage.output_tokens,
-        response.usage.cache_read_input_tokens,
-    )
-    _record_usage(response, purpose, user)
-
-    if response.stop_reason == "refusal":
-        raise GenerationError("Claude declined to generate questions for this material.")
-    if response.stop_reason == "max_tokens":
-        raise GenerationError("The answer was cut off. Try asking for fewer questions at a time.")
-
-    text = "".join(block.text for block in response.content if block.type == "text")
-    try:
-        data = json.loads(text)
-        data[schema["required"][0]]
-    except (ValueError, KeyError, TypeError):
-        logger.warning("Unparseable question output (request %s): %r", response._request_id, text[:500])
-        raise GenerationError("Claude's reply couldn't be read. Please try again.")
-    return data
+def _ask_claude(*args, **kwargs):
+    """The permanent seam for every AI request in this module, whichever provider is active (the name predates
+    Gemini support and is kept on purpose). Every caller here goes through it, and tests patch
+    mock.patch.object(ai, "_ask_claude") to stub the AI. Callers look it up as a module global at call time, and it
+    looks up _ask_model at call time too, so patching either name intercepts every request; a plain alias
+    (_ask_claude = _ask_model) would not, as callers would bind to only one of the two names."""
+    return _ask_model(*args, **kwargs)
 
 
 # ---------- Confidential final paper from a blueprint ----------
@@ -385,7 +319,7 @@ def blueprint_materials(blueprint):
 
 
 def _blueprint_documents(blueprint):
-    """The blueprint's materials (and sample paper) as Claude document blocks, with the books cached."""
+    """The blueprint's materials (and sample paper) as document blocks, with the books cached."""
     sources = list(blueprint_materials(blueprint))
     if not sources:
         raise GenerationError(
@@ -405,7 +339,7 @@ def _blueprint_documents(blueprint):
 
 
 def _final_fields(q):
-    """The fields of a FinalQuestion that come from Claude's reply, cleaned up."""
+    """The fields of a FinalQuestion that come from the AI's reply, cleaned up."""
     return {
         "text": q["text"].strip(),
         "options": [o.strip() for o in q["options"]] if q["question_type"] == Question.QuestionType.MCQ else [],
@@ -428,11 +362,12 @@ def generate_final_paper(blueprint, user):
     documents = _blueprint_documents(blueprint)
     messages = [{"role": "user", "content": [*documents, {"type": "text", "text": _blueprint_text(blueprint, items)}]}]
 
-    data = _ask_claude(FINAL_SYSTEM_PROMPT, messages, FINAL_SCHEMA, effort="high", purpose="final_paper", user=user)
+    data = _ask_claude(FINAL_SYSTEM_PROMPT, messages, FINAL_SCHEMA, effort="high", purpose="final_paper", user=user,
+                       final=True)
     questions = [q for q in data["questions"] if q.get("text", "").strip()]
     slots = blueprint_slots(items)
     if len(questions) != len(slots):
-        raise GenerationError(f"Claude wrote {len(questions)} questions but the blueprint asks for {len(slots)}, "
+        raise GenerationError(f"The AI wrote {len(questions)} questions but the blueprint asks for {len(slots)}, "
                               "so the paper wasn't saved. Please generate it again.")
     # The blueprint decides sections, types and marks, so the totals always match it.
     for q, slot in zip(questions, slots):
@@ -453,7 +388,7 @@ def generate_final_paper(blueprint, user):
             for n, q in enumerate(questions, 1)
         ])
         paper.check_summary = summary
-        paper.model_used = settings.QUESTION_GENERATION_MODEL
+        paper.model_used = llm.model_for(final=True)[:FinalPaper._meta.get_field("model_used").max_length]
         paper.generated_by, paper.generated_at = user, timezone.now()
         paper.save()
     return paper
@@ -491,7 +426,7 @@ REVIEW_SCHEMA = {
 
 
 def check_final_questions(questions, items, documents, user=None):
-    """Flag repeated questions, copied blueprint samples, and (by a second Claude pass over the same, cached
+    """Flag repeated questions, copied blueprint samples, and (by a second AI pass over the same, cached
     materials) questions outside the syllabus or with wrong answers. Returns ({number: [notes]}, summary)."""
     notes = {n: [] for n in range(1, len(questions) + 1)}
     seen = []
@@ -514,7 +449,7 @@ def check_final_questions(questions, items, documents, user=None):
     reviewed = True
     try:
         for r in _ask_claude(REVIEW_SYSTEM_PROMPT, review_messages, REVIEW_SCHEMA,
-                             purpose="final_review", user=user)["reviews"]:
+                             purpose="final_review", user=user, final=True)["reviews"]:
             if r["number"] not in notes:
                 continue
             if not r["in_syllabus"]:
@@ -580,10 +515,11 @@ def regenerate_final_question(paper, order, user):
     messages = [{"role": "user", "content": [*_blueprint_documents(blueprint),
                                              {"type": "text", "text": "\n".join(lines)}]}]
 
-    data = _ask_claude(FINAL_SYSTEM_PROMPT, messages, FINAL_SCHEMA, effort="high", purpose="final_question", user=user)
+    data = _ask_claude(FINAL_SYSTEM_PROMPT, messages, FINAL_SCHEMA, effort="high", purpose="final_question", user=user,
+                       final=True)
     new = [q for q in data["questions"] if q.get("text", "").strip()]
     if len(new) != 1:
-        raise GenerationError(f"Claude wrote {len(new)} questions instead of 1. Please try again.")
+        raise GenerationError(f"The AI wrote {len(new)} questions instead of 1. Please try again.")
     reply = {**new[0], "question_type": slot.question_type}
 
     notes = []
@@ -613,16 +549,20 @@ def _claim(paper, user):
 
     if not can_open_final(user, paper.blueprint):
         raise GenerationError(INVOLVED_MESSAGE)
+    # Checked here too (llm.ask also refuses), so the paper isn't marked "being written" for a request that
+    # would only fail in the background thread.
+    if not final_papers_allowed():
+        raise GenerationError(llm.FINAL_NOT_ALLOWED)
     if paper.status == FinalPaper.Status.LOCKED:
         raise GenerationError("This final paper is locked and can't be regenerated.")
     if paper.is_generating:
-        raise GenerationError("Claude is already writing this paper. You'll get a notification when it's ready.")
+        raise GenerationError("The AI is already writing this paper. You'll get a notification when it's ready.")
     paper.generation_started_at, paper.generation_error = timezone.now(), ""
     paper.save(update_fields=["generation_started_at", "generation_error"])
 
 
 def start_final_paper(blueprint, user):
-    """Have Claude write the final paper in a background thread, since it can take several minutes and a web
+    """Have the AI write the final paper in a background thread, since it can take several minutes and a web
     request would time out. The user gets a notification when it's done. Returns the FinalPaper."""
     from django.db import transaction
 

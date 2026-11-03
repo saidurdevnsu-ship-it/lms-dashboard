@@ -71,7 +71,7 @@ HR Manager has view-only access to accounts.
 
 1. **Materials**: `KnowledgeSource` (PDF, DOCX, TXT, MD up to 20 MB) per subject/grade, with type, chapter and topic.
    `documents.py` extracts text on upload (pymupdf, python-docx) into `content_text`.
-2. **Practice/bank questions**: `ai.generate_questions` asks Claude (structured JSON output) using chosen sources;
+2. **Practice/bank questions**: `ai.generate_questions` asks the AI provider (structured JSON output) using chosen sources;
    results are draft `Question`s. `checks.py` flags near-duplicates and questions copied from samples. HOD
    (`approve_question`) approves/rejects, never their own.
 3. **Blueprint** (`QuestionBlueprint` + `BlueprintItem`s), state machine in `workflow.py`:
@@ -84,8 +84,27 @@ HR Manager has view-only access to accounts.
    unblocks a stuck run. The exam controller edits questions inline, regenerates, then `lock_final`.
 5. **Export** (`export.py`): locked papers only, as PDF and Word, with optional answer key (audited).
 
-Claude is called only through `ai._ask_claude` (model from `QUESTION_GENERATION_MODEL`). Notifications about final
-papers never include their questions. In progress (see `.hermes/plans/`): `papers.py` blueprint slots and
+The AI is called only through `ai._ask_claude` → `llm.ask`. Notifications about final papers never include their
+questions.
+
+### AI provider layer (`questionbank/llm.py`)
+
+- `ai.py` builds every request once in the Anthropic message format (text / document blocks, `cache_control`) and
+  sends it through `ai._ask_claude` (the permanent seam tests patch) → `llm.ask`. `llm.ask` picks the adapter from
+  `AI_PROVIDER` (`anthropic`, default, or `gemini`): `_ask_anthropic` sends the request unchanged (streamed,
+  structured output, server-side fallback); `_ask_gemini` translates it to google-genai parts. Both return a
+  `Reply` with token counts, so usage recording (`AIUsage`, never content), error messages and JSON parsing are
+  shared.
+- Models: `AI_MODEL` (bank questions) and `AI_FINAL_MODEL` (final papers, their review pass and single-question
+  rewrites). Left empty they fall back to `QUESTION_GENERATION_MODEL` on Anthropic and the Gemini defaults on
+  Gemini; a model id from the other provider's family is refused before any request.
+- Paid-tier guard: on Gemini, final-paper purposes are refused (and the admin buttons disabled) unless
+  `GEMINI_PAID_TIER` is `true`/`1`, because Google may use free-tier prompts for training and human review.
+- Gemini requests always send `store=False` and put PDFs inline as bytes (never the Files API), so no copy of a
+  book or paper stays in the Google project. The key comes only from `GEMINI_API_KEY` (passed explicitly, so
+  `GOOGLE_API_KEY` can't win) with `vertexai=False`; one client per request, closed afterwards.
+- Logs name the purpose, request id and sizes, never prompt or reply text (final papers are confidential).
+- `check_ai` (alias `check_claude`) sends one tiny paid request per model to check the key and models. In progress (see `.hermes/plans/`): `papers.py` blueprint slots and
 `workflow.paper_problems` blocking a lock when the paper no longer matches its blueprint.
 
 ## HR flow (`hr/`)
@@ -111,6 +130,8 @@ ones). `stslms.env` is the committed template (key names only). Switches:
 - `EMAIL_HOST` set → SMTP; else emails print to the console. Uses Django 6's `MAILERS` setting, not `EMAIL_BACKEND`.
 - `DJANGO_DEBUG=true` for local development. `SITE_URL` sets absolute email links, `ALLOWED_HOSTS` and CSRF origins
   (and secure cookies when https and not DEBUG). `DJANGO_ALLOWED_HOSTS` adds hosts.
-- `ANTHROPIC_API_KEY`, `QUESTION_GENERATION_MODEL` (default `claude-opus-5-5`) for AI generation.
+- `AI_PROVIDER` (`anthropic` default, or `gemini`), `AI_MODEL`, `AI_FINAL_MODEL`; `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_WORKSPACE_ID`, `QUESTION_GENERATION_MODEL` (default `claude-opus-5-5`) for Claude; `GEMINI_API_KEY`
+  and `GEMINI_PAID_TIER` (`true`/`1` only) for Gemini. See the provider layer above.
 - `MAKE_WEBHOOK_URL` / `MAKE_MAILHOOK_ADDRESS` for Make.com events; with the webhook set, all emails go through Make.
 - HR constants in settings: `HR_COMPANY_NAME`, `HR_WEEKEND_DAYS = [4, 5]`, `HR_OFFICE_START`, `HR_LATE_GRACE_MINUTES`.

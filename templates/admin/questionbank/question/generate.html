@@ -17,7 +17,7 @@
 {% block content_title %}
 <div class="gen-head">
   <h1>Generate questions</h1>
-  <p>Pick a subject and grade. Claude reads the books uploaded for them and writes questions, saved as drafts for you to review.</p>
+  <p>Pick a subject and grade. The AI reads the books uploaded for them and writes questions, saved as drafts for you to review.</p>
   {% include "admin/questionbank/_claude_status.html" %}
 </div>
 {% endblock %}
@@ -79,7 +79,7 @@
         <svg class="gen-sparkle" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2Zm7 12 .9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14Z"/></svg>
         <span id="generate-label">Generate questions</span>
       </button>
-      <p class="gen-wait" id="generate-wait" role="status" hidden>Claude is reading the books and writing questions. This usually takes one to three minutes, so please keep this page open.</p>
+      <p class="gen-wait" id="generate-wait" role="status" hidden>The AI is reading the books and writing questions. This usually takes one to three minutes, so please keep this page open.</p>
     </div>
   </form>
 

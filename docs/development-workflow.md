@@ -28,7 +28,8 @@ Management commands:
 - `setup_academics [--reset]` / `setup_hr [--reset]`: create the predefined roles (and default leave types for HR);
   `--reset` restores default permissions of existing roles.
 - `send_reminders`: create today's deadline reminders and email the new ones (daily schedule).
-- `check_claude`: one tiny **paid** Anthropic request to check key and model — ask first.
+- `check_ai` (alias `check_claude`): one tiny **paid** request per model to the active AI provider (`AI_PROVIDER`)
+  to check key and models; on Gemini without `GEMINI_PAID_TIER` the final model is skipped — ask first.
 - `send_make_test [events...]`: sends sample payloads to the **real** Make webhook/mailhook — ask first.
 
 No linter, formatter or CI is configured.
@@ -39,7 +40,7 @@ Blank every integration for the test process (the settings loader never override
 empty one):
 
 ```bash
-T="env MAKE_WEBHOOK_URL= MAKE_MAILHOOK_ADDRESS= ANTHROPIC_API_KEY= EMAIL_HOST="
+T="env MAKE_WEBHOOK_URL= MAKE_MAILHOOK_ADDRESS= ANTHROPIC_API_KEY= EMAIL_HOST= AI_PROVIDER= AI_MODEL= AI_FINAL_MODEL= GEMINI_API_KEY= GEMINI_PAID_TIER="
 $T venv/Scripts/python.exe manage.py test --noinput                    # MySQL (test_lms), the default
 $T DB_NAME= venv/Scripts/python.exe manage.py test --noinput           # SQLite
 $T venv/Scripts/python.exe manage.py test questionbank --noinput       # one app
@@ -62,7 +63,7 @@ leave", "Export locked final papers and answer keys as PDF and Word".
   summary, then ask.
 - No `migrate` on the real database without a yes, and back up first (`database-design.md`, "Backups").
 - No package installs/upgrades/uninstalls without a yes.
-- No paid API calls (`check_claude`, real generation) or real webhook sends (`send_make_test`) without a yes.
+- No paid API calls (`check_ai` / `check_claude`, real generation) or real webhook sends (`send_make_test`) without a yes.
 - When asked to review or assess, change nothing; report and ask which steps to take.
 
 ## Windows pitfalls
