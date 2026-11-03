@@ -14,7 +14,7 @@ from audit.models import AuditEvent
 from hr.models import Department, Designation, Employee
 from notifications.models import Notification
 
-from .roles import DEFAULT_ROLES
+from .roles import DEFAULT_ROLES, ensure_roles, keep_final_papers_confidential, role_conflict
 
 
 class HomeTests(TestCase):
@@ -375,6 +375,78 @@ class PredefinedRoleTests(TestCase):
                          {"name": self.hod.name, "permissions": perms})
         self.assertFalse(self.hod.permissions.filter(pk=final.pk).exists())
         self.assertTrue(self.hod.permissions.filter(codename="approve_question").exists())  # rest was saved
+
+    def test_admin_role_has_every_permission_including_final_papers(self):
+        admin_role = Group.objects.get(name="Admin")
+        self.assertEqual(admin_role.permissions.count(), Permission.objects.count())
+        keep_final_papers_confidential()
+        self.assertTrue(admin_role.permissions.filter(codename="manage_final_papers").exists())
+
+    def test_subject_matter_expert_only_manages_materials(self):
+        sme = Group.objects.get(name="Subject Matter Expert")
+        self.assertEqual(
+            set(sme.permissions.values_list("codename", flat=True)),
+            {"view_subject", "view_grade", "add_knowledgesource", "change_knowledgesource",
+             "delete_knowledgesource", "view_knowledgesource"})
+
+
+class RoleConflictTests(TestCase):
+    """Whoever sees final papers must not also write blueprints or questions, or they could read their own exam."""
+
+    def setUp(self):
+        self.boss = get_user_model().objects.create_superuser("boss", "boss@example.com", "Pw-12345!")
+
+    def roles(self, *names):
+        return Group.objects.filter(name__in=names)
+
+    def test_final_paper_roles_cannot_be_combined_with_authoring_roles(self):
+        message = role_conflict(self.roles("Exam Controller", "Teacher / Subject Expert"))
+        self.assertIn("Exam Controller", message)
+        self.assertIn("Teacher / Subject Expert", message)
+        self.assertTrue(role_conflict(self.roles("Admin", "Head of Department")))
+        self.assertIsNone(role_conflict(self.roles("Exam Controller", "Employee")))
+        self.assertIsNone(role_conflict(self.roles("Teacher / Subject Expert", "Head of Department", "Employee")))
+        self.assertIsNone(role_conflict(self.roles("Admin")))  # all access on its own is allowed
+
+    def test_conflicts_are_found_by_permission_not_only_by_name(self):
+        custom = Group.objects.create(name="papers team")
+        custom.permissions.add(Permission.objects.get(codename="manage_final_papers"))
+        writers = Group.objects.create(name="writers")
+        writers.permissions.add(Permission.objects.get(codename="add_questionblueprint"))
+        self.assertIn("papers team", role_conflict([custom, writers]))
+
+    def test_roles_are_matched_ignoring_case_and_renamed_to_the_exact_name(self):
+        Group.objects.filter(name="Admin").update(name="admin")
+        ensure_roles(["Admin"])
+        self.assertEqual(list(Group.objects.filter(name__iexact="admin").values_list("name", flat=True)), ["Admin"])
+
+    def test_user_form_refuses_a_conflicting_combination(self):
+        self.client.force_login(self.boss)
+        response = self.client.post(reverse("admin:auth_user_add"), {
+            "username": "mixed", "first_name": "", "last_name": "", "email": "mixed@example.com",
+            "groups": [g.pk for g in self.roles("Exam Controller", "Teacher / Subject Expert")],
+            "usable_password": "false"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "can&#x27;t also have")
+        self.assertFalse(get_user_model().objects.filter(username="mixed").exists())
+
+
+class SubjectMatterExpertAccessTests(TestCase):
+    def setUp(self):
+        from questionbank.models import Grade, Subject, SubjectAssignment
+
+        self.sme = get_user_model().objects.create_user("sme", "sme@example.com", "Pw-12345!", is_staff=True)
+        self.sme.groups.add(Group.objects.get(name="Subject Matter Expert"))
+        SubjectAssignment.objects.create(user=self.sme, subject=Subject.objects.create(name="Science"),
+                                         grade=Grade.objects.create(name="Class 8"))
+        self.client.force_login(self.sme)
+
+    def test_can_upload_materials_but_nothing_else_academic(self):
+        self.assertEqual(self.client.get(reverse("admin:questionbank_knowledgesource_changelist")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("admin:questionbank_knowledgesource_add")).status_code, 200)
+        for name in ("admin:questionbank_question_generate", "admin:questionbank_question_changelist",
+                     "admin:questionbank_questionblueprint_changelist", "admin:questionbank_finalpaper_changelist"):
+            self.assertEqual(self.client.get(reverse(name)).status_code, 403, name)
 
 
 @override_settings(MAKE_WEBHOOK_URL="https://hook.example.com/abc")

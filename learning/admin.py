@@ -1,17 +1,28 @@
 from django.contrib import admin, messages
 from django.contrib.auth.admin import GroupAdmin as BaseGroupAdmin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from django.contrib.auth.forms import AdminUserCreationForm
+from django.contrib.auth.forms import AdminUserCreationForm, UserChangeForm
 from django.contrib.auth.models import Group, User
 
 from notifications.make import send_event, user_created_data
 from questionbank.models import SubjectAssignment
 
-from .roles import DEFAULT_ROLES, ensure_roles, keep_final_papers_confidential
+from .roles import DEFAULT_ROLES, ensure_roles, keep_final_papers_confidential, role_conflict
 from .welcome import send_welcome_email
 
 
-class NewUserForm(AdminUserCreationForm):
+class RoleRulesMixin:
+    """Refuse role combinations that would let one person both write and read a confidential exam."""
+
+    def clean(self):
+        cleaned = super().clean()
+        message = role_conflict(cleaned.get("groups") or [])
+        if message:
+            self.add_error("groups", message)
+        return cleaned
+
+
+class NewUserForm(RoleRulesMixin, AdminUserCreationForm):
     """Add-user form that also collects name, email and roles, so the welcome email can go out at once."""
 
     class Meta(AdminUserCreationForm.Meta):
@@ -21,6 +32,10 @@ class NewUserForm(AdminUserCreationForm):
         super().__init__(*args, **kwargs)
         self.fields["email"].required = True
         self.fields["email"].help_text = "The welcome email, with a link to set a password, is sent here."
+
+
+class EditUserForm(RoleRulesMixin, UserChangeForm):
+    pass
 
 
 class RoleListFilter(admin.RelatedFieldListFilter):
@@ -86,8 +101,8 @@ class RoleAdmin(BaseGroupAdmin):
     def save_related(self, request, form, formsets, change):
         super().save_related(request, form, formsets, change)
         if keep_final_papers_confidential():
-            self.message_user(request, "Final papers stay with the Exam Controller role only, so that permission "
-                                       "was taken off this role.", messages.WARNING)
+            self.message_user(request, "Final papers stay with the Exam Controller and Admin roles only, so that "
+                                       "permission was taken off this role.", messages.WARNING)
 
     @admin.action(description="Reset to default permissions", permissions=["change"])
     def reset_to_defaults(self, request, queryset):
@@ -134,6 +149,7 @@ class UserAdmin(BaseUserAdmin):
     """Django's user admin, with "groups" presented as roles and no way to gain more permissions than you hold."""
 
     list_filter = ("is_staff", "is_superuser", "is_active", ("groups", RoleListFilter))
+    form = EditUserForm
     add_form = NewUserForm
     add_fieldsets = (
         (None, {"classes": ("wide",), "fields": ("username", "first_name", "last_name", "email")}),

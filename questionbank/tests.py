@@ -266,7 +266,8 @@ class AIUsageTests(BlueprintTestCase):
     def ask(self, **kwargs):
         stream = mock.MagicMock()
         stream.__enter__.return_value.get_final_message.return_value = self.fake_response('{"questions": []}')
-        with mock.patch.object(ai.anthropic, "Anthropic") as client:
+        with mock.patch.object(ai.anthropic, "Anthropic") as client, \
+                mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
             client.return_value.beta.messages.stream.return_value = stream
             return ai._ask_claude("system", [], ai.OUTPUT_SCHEMA, **kwargs)
 
@@ -290,6 +291,129 @@ class AIUsageTests(BlueprintTestCase):
     def test_hod_cannot_see_usage(self):
         self.client.force_login(self.hod)
         self.assertEqual(self.client.get(reverse("admin:questionbank_aiusage_changelist")).status_code, 403)
+
+
+class AuthorCannotSeeOwnPaperTests(BlueprintTestCase):
+    """Whoever wrote, edited or reviewed a blueprint must not generate or read its confidential paper, even with
+    a role that sees final papers (Admin has every permission)."""
+
+    def paper(self):
+        with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(3)):
+            return ai.generate_final_paper(self.bp, self.controller)
+
+    def test_creator_reviewer_or_editor_is_involved(self):
+        self.assertFalse(workflow.involved_in(self.bp, self.controller))
+        for field in ("created_by", "reviewed_by"):
+            QuestionBlueprint.objects.filter(pk=self.bp.pk).update(**{field: self.controller})
+            self.assertTrue(workflow.involved_in(QuestionBlueprint.objects.get(pk=self.bp.pk), self.controller), field)
+            QuestionBlueprint.objects.filter(pk=self.bp.pk).update(**{field: None})
+        from django.contrib.admin.models import CHANGE, LogEntry
+        from django.contrib.contenttypes.models import ContentType
+        LogEntry.objects.create(user=self.controller, content_type=ContentType.objects.get_for_model(QuestionBlueprint),
+                                object_id=str(self.bp.pk), object_repr="x", action_flag=CHANGE)
+        self.assertTrue(workflow.involved_in(self.bp, self.controller))
+
+    def test_involved_controller_cannot_generate(self):
+        QuestionBlueprint.objects.filter(pk=self.bp.pk).update(created_by=self.controller)
+        self.bp.refresh_from_db()
+        with mock.patch.object(ai.threading, "Thread"):
+            with self.assertRaisesMessage(ai.GenerationError, "wrote, edited or reviewed"):
+                ai.start_final_paper(self.bp, self.controller)
+
+    def test_involved_controller_cannot_open_print_or_list_the_paper(self):
+        paper = self.paper()
+        QuestionBlueprint.objects.filter(pk=self.bp.pk).update(reviewed_by=self.controller)
+        self.client.force_login(self.controller)
+        page = self.client.get(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
+        self.assertNotEqual(page.status_code, 200)
+        self.assertEqual(self.client.get(reverse("admin:questionbank_final_print", args=[paper.pk])).status_code, 403)
+        listing = self.client.get(reverse("admin:questionbank_finalpaper_changelist"))
+        self.assertNotContains(listing, "Science mid-term")
+
+    def test_uninvolved_controller_still_can(self):
+        paper = self.paper()
+        self.client.force_login(self.controller)
+        self.assertEqual(self.client.get(reverse("admin:questionbank_finalpaper_change", args=[paper.pk])).status_code, 200)
+
+
+class ClaudeClientTests(TestCase):
+    """Keys that aren't scoped to a workspace need the anthropic-workspace-id header on every request."""
+
+    @override_settings(ANTHROPIC_WORKSPACE_ID="wrkspc_test")
+    def test_workspace_id_is_sent_when_set(self):
+        with mock.patch.object(ai.anthropic, "Anthropic") as client, \
+                mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            ai.claude_client()
+        client.assert_called_once_with(default_headers={"anthropic-workspace-id": "wrkspc_test"})
+
+    @override_settings(ANTHROPIC_WORKSPACE_ID="")
+    def test_no_workspace_header_when_not_set(self):
+        with mock.patch.object(ai.anthropic, "Anthropic") as client, \
+                mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            ai.claude_client()
+        client.assert_called_once_with()
+
+    def test_missing_key_gives_a_plain_message_instead_of_crashing(self):
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}):
+            with self.assertRaisesMessage(ai.GenerationError, "ANTHROPIC_API_KEY"):
+                ai._ask_claude("system", [], ai.OUTPUT_SCHEMA, purpose="questions")
+
+
+class LearningFromApprovedTests(BlueprintTestCase):
+    """Approved bank questions are sent as style examples, so generation follows what HODs accept."""
+
+    def add(self, text, status="approved", **fields):
+        values = {"subject": self.bp.subject, "grade": self.bp.grade, "question_type": "short",
+                  "difficulty": "easy", "answer": "A", "text": text, "status": status, **fields}
+        return Question.objects.create(**values)
+
+    def prompt(self, **kwargs):
+        reply = {"questions": [{"text": "New?", "options": [], "answer": "A", "explanation": "", "source_reference": ""}]}
+        args = {"subject": self.bp.subject, "grade": self.bp.grade, "topic": "", "question_type": "short",
+                "difficulty": "easy", "count": 1, "language": "en", "user": self.controller, **kwargs}
+        with mock.patch.object(ai, "_ask_claude", return_value=reply) as ask:
+            ai.generate_questions(**args)
+        return ask.call_args.args[1][0]["content"][-1]["text"]
+
+    def test_only_approved_questions_of_the_same_kind_are_examples(self):
+        self.add("Approved short question?")
+        self.add("Draft question?", status="draft")
+        self.add("Rejected question?", status="rejected")
+        self.add("Approved MCQ?", question_type="mcq")
+        self.add("Other grade question?", grade=Grade.objects.create(name="Class 9"))
+        prompt = self.prompt()
+        self.assertIn("Approved short question?", prompt)
+        for text in ("Draft question?", "Rejected question?", "Approved MCQ?", "Other grade question?"):
+            self.assertNotIn(text, prompt)
+        self.assertIn("do not repeat or reword", prompt)
+
+    def test_closest_matches_come_first_and_the_number_is_limited(self):
+        for n in range(ai.MAX_EXAMPLES + 3):
+            self.add(f"Hard question {n}?", difficulty="hard")
+        self.add("Easy one on photosynthesis?", topic="Photosynthesis")
+        examples = ai.approved_examples(subject=self.bp.subject, grade=self.bp.grade, question_type="short",
+                                        difficulty="easy", topic="photosynthesis")
+        self.assertEqual(len(examples), ai.MAX_EXAMPLES)
+        self.assertEqual(examples[0].text, "Easy one on photosynthesis?")
+
+    def test_no_examples_section_without_approved_questions(self):
+        self.assertNotIn("Approved questions from this school", self.prompt())
+
+    def test_teacher_is_told_how_many_examples_were_used(self):
+        self.add("Approved short question?")
+        reply = {"questions": [{"text": "New?", "options": [], "answer": "A", "explanation": "", "source_reference": ""}]}
+        self.client.force_login(self.controller)
+        with mock.patch.object(ai, "_ask_claude", return_value=reply):
+            response = self.client.post(reverse("admin:questionbank_question_generate"), {
+                "subject": self.bp.subject.pk, "grade": self.bp.grade.pk, "topic": "", "question_type": "short",
+                "difficulty": "easy", "count": 1, "language": "en"}, follow=True)
+        self.assertContains(response, "following 1 approved question(s) from your bank as examples")
+
+    def test_final_papers_never_use_bank_questions(self):
+        self.add("Approved short question?")
+        with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(3)) as ask:
+            ai.generate_final_paper(self.bp, self.controller)
+        self.assertNotIn("Approved short question?", ask.call_args_list[0].args[1][0]["content"][-1]["text"])
 
 
 class DocumentUploadTests(BlueprintTestCase):

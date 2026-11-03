@@ -89,7 +89,7 @@ def _source_block(source):
     return {"type": "document", "source": doc_source, "title": source.label}
 
 
-def _build_request(sources, *, subject, grade, topic, question_type, difficulty, count, language):
+def _build_request(sources, *, subject, grade, topic, question_type, difficulty, count, language, examples=()):
     total = sum(s.file.size for s in sources)
     if total > MAX_TOTAL_SOURCE_BYTES:
         raise GenerationError(
@@ -110,15 +110,57 @@ def _build_request(sources, *, subject, grade, topic, question_type, difficulty,
         f"Difficulty: {Question.Difficulty(difficulty).label}\n"
         f"Number of questions: {count}\n"
         f"Write the questions, options, answers and explanations in {LANGUAGES[language]}.\n\n"
-        f"Write exactly {count} {type_label.lower()} questions from the books above."
+        + _examples_text(examples)
+        + f"Write exactly {count} {type_label.lower()} questions from the books above."
     )
     return [{"role": "user", "content": [*documents, {"type": "text", "text": instructions}]}]
 
 
-def generate_questions(*, subject, grade, topic, question_type, difficulty, count, language, user, sources=None):
+# Approved bank questions sent as style examples: at most this many, and this many characters in total.
+MAX_EXAMPLES = 8
+MAX_EXAMPLE_CHARS = 6000
+
+
+def approved_examples(*, subject, grade, question_type, difficulty, topic=""):
+    """Questions HODs approved for the same subject, grade and type, closest first (same difficulty, then same
+    topic, then newest). Sending them with each request lets generation follow what the school accepts, without
+    any model training. Never used for confidential final papers: teachers can see the bank."""
+    recent = list(Question.objects.filter(subject=subject, grade=grade, question_type=question_type,
+                                          status=Question.Status.APPROVED).order_by("-created_at")[:50])
+    topic = topic.strip().lower()
+    recent.sort(key=lambda q: (q.difficulty != difficulty, not (topic and topic in q.topic.lower())))
+    chosen, used = [], 0
+    for q in recent:
+        size = len(q.text) + len(q.answer) + sum(len(o) for o in q.options)
+        if used + size > MAX_EXAMPLE_CHARS:
+            continue
+        chosen.append(q)
+        used += size
+        if len(chosen) == MAX_EXAMPLES:
+            break
+    return chosen
+
+
+def _examples_text(examples):
+    if not examples:
+        return ""
+    lines = ["Approved questions from this school's question bank for the same subject, grade and type. Match "
+             "their style, depth, wording level and format, but write new questions: do not repeat or reword "
+             "any of them.", ""]
+    for n, q in enumerate(examples, 1):
+        lines.append(f"Example {n} ({q.get_difficulty_display().lower()}): {q.text}")
+        if q.options:
+            lines.append("Options: " + " | ".join(q.options))
+        lines.append(f"Answer: {q.answer}")
+    return "\n".join(lines) + "\n\n"
+
+
+def generate_questions(*, subject, grade, topic, question_type, difficulty, count, language, user, sources=None,
+                       examples=None):
     """Ask Claude for questions and save them as drafts. Returns the saved Question objects.
 
     sources limits Claude to chosen materials (e.g. some chapters); by default it reads all active ones.
+    examples are approved bank questions to imitate; by default approved_examples() picks them.
     """
     sources = list(sources) if sources else list(
         KnowledgeSource.objects.filter(subject=subject, grade=grade, is_active=True))
@@ -128,9 +170,12 @@ def generate_questions(*, subject, grade, topic, question_type, difficulty, coun
             "Add one under Question bank → Books & knowledge sources first."
         )
 
+    if examples is None:
+        examples = approved_examples(subject=subject, grade=grade, question_type=question_type,
+                                     difficulty=difficulty, topic=topic)
     messages = _build_request(
         sources, subject=subject, grade=grade, topic=topic, question_type=question_type,
-        difficulty=difficulty, count=count, language=language,
+        difficulty=difficulty, count=count, language=language, examples=examples,
     )
 
     items = _ask_claude(SYSTEM_PROMPT, messages, OUTPUT_SCHEMA, purpose="questions", user=user)["questions"]
@@ -192,11 +237,23 @@ def _record_usage(response, purpose, user):
         logger.exception("Couldn't record AI usage")
 
 
+def claude_client():
+    """The Anthropic client. Keys that aren't scoped to a workspace must name one on every request, so
+    ANTHROPIC_WORKSPACE_ID (if set) is sent as the anthropic-workspace-id header."""
+    import os
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise GenerationError("The Claude API key isn't set. Add ANTHROPIC_API_KEY to the .env file and restart.")
+    if settings.ANTHROPIC_WORKSPACE_ID:
+        return anthropic.Anthropic(default_headers={"anthropic-workspace-id": settings.ANTHROPIC_WORKSPACE_ID})
+    return anthropic.Anthropic()
+
+
 def _ask_claude(system, messages, schema, *, effort="medium", purpose, user=None):
     """Send one structured-output request to Claude and return the parsed JSON object. purpose (an
     AIUsage.Purpose value) and user label the token counts recorded for cost tracking."""
+    client = claude_client()
     try:
-        client = anthropic.Anthropic()
         with client.beta.messages.stream(
             model=settings.QUESTION_GENERATION_MODEL,
             max_tokens=64000,
@@ -547,12 +604,15 @@ def regenerate_final_question(paper, order, user):
     return FinalQuestion.objects.get(pk=target.pk)
 
 
-def _claim(paper):
+def _claim(paper, user):
     """Mark the paper as being written. Call inside a transaction holding select_for_update on the paper."""
     from django.utils import timezone
 
     from .models import FinalPaper
+    from .workflow import INVOLVED_MESSAGE, can_open_final
 
+    if not can_open_final(user, paper.blueprint):
+        raise GenerationError(INVOLVED_MESSAGE)
     if paper.status == FinalPaper.Status.LOCKED:
         raise GenerationError("This final paper is locked and can't be regenerated.")
     if paper.is_generating:
@@ -570,7 +630,7 @@ def start_final_paper(blueprint, user):
 
     with transaction.atomic():
         paper, _ = FinalPaper.objects.select_for_update().get_or_create(blueprint=blueprint)
-        _claim(paper)
+        _claim(paper, user)
     record(user, Action.FINAL_STARTED, paper)
     threading.Thread(target=_in_thread, args=(write_final_paper, paper.pk, user.pk), daemon=True).start()
     return paper
@@ -585,7 +645,7 @@ def start_question_regeneration(paper, order, user):
 
     with transaction.atomic():
         paper = FinalPaper.objects.select_for_update().get(pk=paper.pk)
-        _claim(paper)
+        _claim(paper, user)
     record(user, Action.FINAL_STARTED, paper, details=f"Regenerating question {order}")
     threading.Thread(target=_in_thread, args=(rewrite_final_question, paper.pk, order, user.pk),
                      daemon=True).start()

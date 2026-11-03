@@ -33,6 +33,33 @@ def can_manage_final(user):
     return user.is_active and (user.is_superuser or user.has_perm(FINAL_PERM))
 
 
+INVOLVED_MESSAGE = ("You wrote, edited or reviewed this blueprint, so you can't generate or open its confidential "
+                    "final paper. Ask another exam controller.")
+
+
+def involved_blueprint_ids(user):
+    """Blueprints the user created, was assigned, reviewed or edited (admin history). Nobody, superusers included,
+    may see the final paper of one of these: they'd know the exam in advance."""
+    from django.contrib.admin.models import LogEntry
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Q
+
+    ids = set(QuestionBlueprint.objects.filter(Q(created_by=user) | Q(assigned_to=user) | Q(reviewed_by=user))
+              .values_list("pk", flat=True))
+    edited = LogEntry.objects.filter(user=user, content_type=ContentType.objects.get_for_model(QuestionBlueprint))
+    ids |= {int(pk) for pk in edited.values_list("object_id", flat=True) if pk and pk.isdigit()}
+    return ids
+
+
+def involved_in(bp, user):
+    return bp.pk in involved_blueprint_ids(user)
+
+
+def can_open_final(user, bp):
+    """Whether the user may generate or see the final paper for this blueprint."""
+    return can_manage_final(user) and not involved_in(bp, user)
+
+
 def _url(bp):
     return reverse("admin:questionbank_questionblueprint_change", args=[bp.pk])
 

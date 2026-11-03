@@ -17,7 +17,8 @@ from learning.approvals import SELF_APPROVAL_MESSAGE, is_own, others_only
 
 from . import export, workflow
 from .scope import allowed_subjects, covers, has_no_assignments, in_scope
-from .ai import GenerationError, claude_status, generate_questions, start_final_paper, start_question_regeneration
+from .ai import (GenerationError, approved_examples, claude_status, generate_questions, start_final_paper,
+                 start_question_regeneration)
 from .forms import BlueprintForm, GenerateQuestionsForm, KnowledgeSourceForm
 from .models import (
     AcademicEvent, AIUsage, BlueprintItem, FinalPaper, FinalQuestion, Grade, KnowledgeSource, Question,
@@ -224,19 +225,25 @@ class QuestionAdmin(SubjectScopeMixin, admin.ModelAdmin):
         form = GenerateQuestionsForm(request.POST or None, initial=initial, user=request.user)
         if request.method == "POST" and form.is_valid():
             data = form.cleaned_data
+            examples = approved_examples(subject=data["subject"], grade=data["grade"],
+                                         question_type=data["question_type"], difficulty=data["difficulty"],
+                                         topic=data["topic"])
             try:
-                created = generate_questions(**data, user=request.user)
+                created = generate_questions(**data, user=request.user, examples=examples)
             except GenerationError as exc:
                 form.add_error(None, str(exc))
             else:
                 record(request.user, Action.QUESTIONS_GENERATED, request=request,
                        details=f"{len(created)} {data['question_type']} question(s), {data['subject']} / {data['grade']}"
-                               + (f", topic: {data['topic']}" if data['topic'] else ""))
+                               + (f", topic: {data['topic']}" if data['topic'] else "")
+                               + (f", {len(examples)} approved example(s)" if examples else ""))
                 dups = sum(1 for q in created if q.duplicate_of_id)
                 self.message_user(
                     request,
-                    f"Generated {len(created)} {data['subject']} question(s) for {data['grade']}. "
-                    "They're saved as drafts. Review them and approve the ones you want to keep."
+                    f"Generated {len(created)} {data['subject']} question(s) for {data['grade']}"
+                    + (f", following {len(examples)} approved question(s) from your bank as examples" if examples
+                       else "")
+                    + ". They're saved as drafts. Review them and approve the ones you want to keep."
                     + (f" {dups} look like questions already in the bank; see the “Duplicate?” column." if dups else ""),
                     messages.WARNING if dups else messages.SUCCESS,
                 )
@@ -486,17 +493,18 @@ class QuestionBlueprintAdmin(SubjectScopeMixin, admin.ModelAdmin):
             bp = self.get_object(request, object_id)
             if bp:
                 user = request.user
-                final = FinalPaper.objects.filter(blueprint=bp).first() if can_manage_final(user) else None
+                may_open = workflow.can_open_final(user, bp)
+                final = FinalPaper.objects.filter(blueprint=bp).first() if may_open else None
                 extra_context.update({
                     "bp": bp,
                     "can_submit": bp.status in QuestionBlueprint.EDITABLE_BY_AUTHOR
                     and (bp.assigned_to_id == user.pk or can_review(user)),
                     "can_review_now": bp.status == QuestionBlueprint.Status.IN_REVIEW and can_review(user)
                     and not workflow.reviews_own(bp, user),
-                    "can_generate": can_manage_final(user) and bp.status == QuestionBlueprint.Status.APPROVED
+                    "can_generate": may_open and bp.status == QuestionBlueprint.Status.APPROVED
                     and (final is None or final.status != FinalPaper.Status.LOCKED),
                     "final": final,
-                    "is_controller": can_manage_final(user),
+                    "is_controller": may_open,
                     "claude": claude_status(),
                 })
         return super().changeform_view(request, object_id, form_url, extra_context)
@@ -525,7 +533,7 @@ class QuestionBlueprintAdmin(SubjectScopeMixin, admin.ModelAdmin):
             else:
                 if not can_manage_final(user) or bp.status != QuestionBlueprint.Status.APPROVED:
                     raise PermissionDenied
-                start_final_paper(bp, user)
+                start_final_paper(bp, user)  # refuses people who wrote, edited or reviewed this blueprint
                 msg = ("Claude is writing the final paper. It takes a few minutes; you'll get a notification "
                        "when it's ready.")
         except (workflow.WorkflowError, GenerationError) as exc:
@@ -545,10 +553,11 @@ class FinalQuestionInline(admin.StackedInline):
     readonly_fields = ("check_notes",)
 
     def _editable(self, request, obj):
-        return can_manage_final(request.user) and obj is not None and obj.status != FinalPaper.Status.LOCKED
+        return (obj is not None and workflow.can_open_final(request.user, obj.blueprint)
+                and obj.status != FinalPaper.Status.LOCKED)
 
     def has_view_permission(self, request, obj=None):
-        return can_manage_final(request.user)
+        return can_manage_final(request.user) if obj is None else workflow.can_open_final(request.user, obj.blueprint)
 
     def has_add_permission(self, request, obj=None):
         return self._editable(request, obj)
@@ -590,14 +599,20 @@ class FinalPaperAdmin(admin.ModelAdmin):
                     f.instance.check_notes = self.EDITED_NOTE
         super().save_formset(request, form, formset, change)
 
+    def get_queryset(self, request):
+        # Papers of blueprints this user wrote, edited or reviewed aren't listed or reachable at all.
+        return super().get_queryset(request).exclude(blueprint__in=workflow.involved_blueprint_ids(request.user))
+
     def has_module_permission(self, request):
         return can_manage_final(request.user)
 
     def has_view_permission(self, request, obj=None):
-        return can_manage_final(request.user)
+        return can_manage_final(request.user) if obj is None else workflow.can_open_final(request.user, obj.blueprint)
 
     def has_change_permission(self, request, obj=None):
-        return can_manage_final(request.user) and (obj is None or obj.status != FinalPaper.Status.LOCKED)
+        if obj is None:
+            return can_manage_final(request.user)
+        return workflow.can_open_final(request.user, obj.blueprint) and obj.status != FinalPaper.Status.LOCKED
 
     def has_add_permission(self, request):
         return False  # created from an approved blueprint
@@ -625,7 +640,7 @@ class FinalPaperAdmin(admin.ModelAdmin):
         if not can_manage_final(request.user):
             raise PermissionDenied
         if request.method == "POST" and object_id and {"_lock", "_regenerate", "_regenerate_one"} & set(request.POST):
-            paper = get_object_or_404(FinalPaper, pk=object_id)
+            paper = get_object_or_404(self.get_queryset(request), pk=object_id)
             try:
                 if "_lock" in request.POST:
                     workflow.lock_final(paper, request.user)
@@ -661,8 +676,11 @@ class FinalPaperAdmin(admin.ModelAdmin):
     def _paper_for_export(self, request, pk):
         if not can_manage_final(request.user):
             raise PermissionDenied
-        return get_object_or_404(FinalPaper.objects.select_related("blueprint__subject", "blueprint__grade",
-                                                                   "blueprint__exam"), pk=pk)
+        paper = get_object_or_404(FinalPaper.objects.select_related("blueprint__subject", "blueprint__grade",
+                                                                    "blueprint__exam"), pk=pk)
+        if not workflow.can_open_final(request.user, paper.blueprint):
+            raise PermissionDenied
+        return paper
 
     def print_view(self, request, pk):
         paper = self._paper_for_export(request, pk)

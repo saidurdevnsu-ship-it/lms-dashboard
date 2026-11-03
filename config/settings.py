@@ -192,6 +192,9 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # Claude question generation. The API key is read from the ANTHROPIC_API_KEY environment variable.
 QUESTION_GENERATION_MODEL = os.environ.get('QUESTION_GENERATION_MODEL', 'claude-opus-5-5')
+# Needed only when the API key isn't scoped to a workspace (keys starting sk-ant-usr-): the wrkspc_... ID from
+# platform.claude.com → Settings → Workspaces. Not a secret.
+ANTHROPIC_WORKSPACE_ID = os.environ.get('ANTHROPIC_WORKSPACE_ID', '')
 
 # Make.com mailhook: an email address that starts a Make scenario. Kept in .env because anyone who knows it can
 # trigger the scenario.

@@ -4,6 +4,8 @@ import anthropic
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from questionbank.ai import claude_client
+
 
 class Command(BaseCommand):
     help = "Check that the Claude API key and model work by sending one tiny request (costs a fraction of a cent)."
@@ -14,7 +16,7 @@ class Command(BaseCommand):
             raise CommandError("ANTHROPIC_API_KEY isn't set. Add it to the .env file in the project folder.")
         self.stdout.write(f"Testing Claude model {model}…")
         try:
-            response = anthropic.Anthropic().messages.create(
+            response = claude_client().messages.create(
                 model=model,
                 max_tokens=256,
                 output_config={"effort": "low"},
