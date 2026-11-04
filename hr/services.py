@@ -15,7 +15,8 @@ from notifications.make import leave_approved_data, send_event
 from notifications.models import Notification
 from notifications.services import notify, users_with_perm
 
-from .models import Attendance, Holiday, LeaveRequest, LeaveType, ReviewStatus
+from .models import Attendance, Employee, Holiday, LeaveRequest, LeaveType, ReviewStatus
+from .roles import is_hr_manager
 
 
 # ---------- Calendar ----------
@@ -95,13 +96,70 @@ def validate_leave(leave):
     return problems + balance_problems(leave)
 
 
+def review_refusal(user, leave):
+    """Why this user may not approve or reject the request, or None if they may: HR managers and the head of the
+    employee's department review leave, nobody their own."""
+    if is_own(user, leave.employee.user_id):
+        return SELF_APPROVAL_MESSAGE
+    if is_hr_manager(user) or leave.employee.department.head_id == user.pk:
+        return None
+    return "Only HR or the employee's department head can review this request."
+
+
+def can_review_leave(user, leave):
+    return review_refusal(user, leave) is None
+
+
+def cancel_refusal(user, leave):
+    """Why this user may not cancel the request, or None if they may. HR managers cancel pending or approved leave
+    of anyone; employees may only withdraw their own request while it is still pending. Department heads review,
+    but don't cancel, their team's leave."""
+    if leave.status not in (ReviewStatus.PENDING, ReviewStatus.APPROVED):
+        return already_done(leave)
+    if is_hr_manager(user):
+        return None
+    if is_own(user, leave.employee.user_id):
+        if leave.status == ReviewStatus.PENDING:
+            return None
+        return "Approved leave can only be cancelled by HR. Please ask HR if your plans have changed."
+    return "Only HR or the employee who asked for this leave can cancel it."
+
+
+def can_cancel_leave(user, leave):
+    return cancel_refusal(user, leave) is None
+
+
+def already_done(leave):
+    return f"This request was already {leave.get_status_display().lower()}."
+
+
+def lock_leave(leave):
+    """Lock the employee row, then the request row, and reload the request in place. Always in that order, so a
+    review and a cancel of the same employee's leave can't deadlock, and two of their requests can't both pass the
+    balance check at once. Decisions are then made on what is saved now, not on the copy a page showed earlier.
+    Call inside transaction.atomic."""
+    employee_id = leave.employee_id
+    list(Employee.objects.select_for_update().filter(pk=employee_id).order_by().values_list("pk", flat=True))
+    try:
+        leave.refresh_from_db(from_queryset=LeaveRequest.objects.select_for_update())
+    except LeaveRequest.DoesNotExist:
+        raise LeaveError("This request no longer exists.") from None
+    if leave.employee_id != employee_id:
+        raise LeaveError("This request was changed while you were looking at it. Please open it again.")
+
+
 @transaction.atomic
 def review_leave(leave, *, approve, reviewer, note=""):
-    """Approve or reject a pending request. Approval checks the balance again, since other leave may have been
-    approved since this request was made, and raises LeaveError if it no longer fits. Nobody reviews their own
-    request."""
-    if is_own(reviewer, leave.employee.user_id):
-        raise LeaveError(SELF_APPROVAL_MESSAGE)
+    """Approve or reject a pending request. The request is locked and re-read first, so a request already reviewed
+    by someone else is refused rather than reviewed twice. Approval checks the balance again under that lock, since
+    other leave may have been approved since this request was made, and raises LeaveError if it no longer fits.
+    The notification and the Make event go out only once the change is saved."""
+    problem = review_refusal(reviewer, leave)
+    if problem:
+        raise LeaveError(problem)
+    lock_leave(leave)
+    if leave.status != ReviewStatus.PENDING:
+        raise LeaveError(already_done(leave))
     if approve:
         problems = balance_problems(leave)
         if problems:
@@ -119,19 +177,33 @@ def review_leave(leave, *, approve, reviewer, note=""):
                 employee=leave.employee, date=day,
                 defaults={"status": Attendance.Status.ON_LEAVE, "note": f"{leave.leave_type} leave"},
             )
-        send_event("leave.approved", leave_approved_data(leave))
-    notify(
-        leave.employee.user,
-        f"Leave {'approved' if approve else 'rejected'}: {leave.leave_type}, {leave.start_date:%d %b} – {leave.end_date:%d %b}",
-        body=leave.review_note, url=reverse("admin:hr_leaverequest_change", args=[leave.pk]),
-        kind=Notification.Kind.SUCCESS if approve else Notification.Kind.WARNING, exclude=reviewer,
-    )
+    event_data = leave_approved_data(leave) if approve else None
+    title = (f"Leave {'approved' if approve else 'rejected'}: {leave.leave_type}, "
+             f"{leave.start_date:%d %b} – {leave.end_date:%d %b}")
+    body, url = leave.review_note, reverse("admin:hr_leaverequest_change", args=[leave.pk])
+    employee_user = leave.employee.user
+
+    def after_commit():
+        if event_data is not None:
+            send_event("leave.approved", event_data)
+        notify(employee_user, title, body=body, url=url,
+               kind=Notification.Kind.SUCCESS if approve else Notification.Kind.WARNING, exclude=reviewer)
+
+    transaction.on_commit(after_commit)
 
 
 @transaction.atomic
 def cancel_leave(leave, by):
-    """Cancel a pending or approved request. For approved leave, the "on leave" attendance it created is removed,
-    so the days go back into the balance."""
+    """Cancel a pending or approved request (see cancel_refusal for who may). The request is locked and re-read
+    first, so it can't be cancelled after someone else has already changed it. For approved leave, the "on leave"
+    attendance it created is removed, so the days go back into the balance."""
+    problem = cancel_refusal(by, leave)
+    if problem:
+        raise LeaveError(problem)
+    lock_leave(leave)
+    problem = cancel_refusal(by, leave)  # again, on what is saved now
+    if problem:
+        raise LeaveError(problem)
     was_approved = leave.status == ReviewStatus.APPROVED
     leave.status = ReviewStatus.CANCELLED
     leave.save(update_fields=["status"])
@@ -140,11 +212,12 @@ def cancel_leave(leave, by):
         Attendance.objects.filter(
             employee=leave.employee, date__range=(leave.start_date, leave.end_date), status=Attendance.Status.ON_LEAVE
         ).delete()
-        notify(leave.employee.user,
-               f"Leave cancelled: {leave.leave_type}, {leave.start_date:%d %b} – {leave.end_date:%d %b}",
-               body="HR cancelled this approved leave. The days are back in your balance.",
-               url=reverse("admin:hr_leaverequest_change", args=[leave.pk]),
-               kind=Notification.Kind.WARNING, exclude=by)
+        title = f"Leave cancelled: {leave.leave_type}, {leave.start_date:%d %b} – {leave.end_date:%d %b}"
+        url = reverse("admin:hr_leaverequest_change", args=[leave.pk])
+        employee_user = leave.employee.user
+        transaction.on_commit(lambda: notify(
+            employee_user, title, body="HR cancelled this approved leave. The days are back in your balance.",
+            url=url, kind=Notification.Kind.WARNING, exclude=by))
 
 
 def announce_request(obj, what, summary):

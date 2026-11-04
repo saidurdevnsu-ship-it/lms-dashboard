@@ -18,10 +18,7 @@ from audit.services import Action, record
 from . import reports, services
 from .forms import LeaveRequestForm, MarkAttendanceDateForm, active_employees
 from .models import Attendance, Department, Designation, Employee, Holiday, LeaveRequest, LeaveType, ReviewStatus
-
-
-def is_hr_manager(user):
-    return user.is_superuser or user.has_perm("hr.manage_hr")
+from .roles import is_hr_manager  # also imported from hr.admin elsewhere; keep this name here
 
 
 def own_employee(request):
@@ -323,16 +320,18 @@ class LeaveRequestAdmin(OwnRecordsMixin, admin.ModelAdmin):
         return actions
 
     def _review(self, request, queryset, approve):
-        pending = queryset.filter(status=ReviewStatus.PENDING)
-        if not is_hr_manager(request.user):
-            # Department heads review their team's requests, never their own (HR does those).
-            pending = pending.filter(employee__department__head=request.user).exclude(employee__user=request.user)
+        # Only what this user may review goes through (services.review_leave checks it again under a lock).
         done = 0
-        for leave in pending.select_related("employee__user", "leave_type"):
-            try:
-                services.review_leave(leave, approve=approve, reviewer=request.user)
-            except services.LeaveError as exc:
-                self.message_user(request, f"Not {'approved' if approve else 'rejected'}: {leave}. {exc}",
+        for leave in queryset.filter(status=ReviewStatus.PENDING).select_related(
+                "employee__user", "employee__department", "leave_type"):
+            problem = services.review_refusal(request.user, leave)
+            if problem is None:
+                try:
+                    services.review_leave(leave, approve=approve, reviewer=request.user)
+                except services.LeaveError as exc:
+                    problem = str(exc)
+            if problem:
+                self.message_user(request, f"Not {'approved' if approve else 'rejected'}: {leave}. {problem}",
                                   messages.ERROR)
             else:
                 done += 1
@@ -349,10 +348,19 @@ class LeaveRequestAdmin(OwnRecordsMixin, admin.ModelAdmin):
 
     @admin.action(description="Cancel selected leave")
     def cancel_selected(self, request, queryset):
-        # Employees can withdraw pending requests; HR can also cancel approved leave.
-        statuses = [ReviewStatus.PENDING] + ([ReviewStatus.APPROVED] if is_hr_manager(request.user) else [])
+        # Employees can withdraw their own pending requests; HR can also cancel approved leave
+        # (services.cancel_refusal; services.cancel_leave checks it again under a lock).
         n = 0
-        for leave in queryset.filter(status__in=statuses).select_related("employee__user", "leave_type"):
-            services.cancel_leave(leave, by=request.user)
-            n += 1
+        selected = queryset.filter(status__in=[ReviewStatus.PENDING, ReviewStatus.APPROVED])
+        for leave in selected.select_related("employee__user", "employee__department", "leave_type"):
+            problem = services.cancel_refusal(request.user, leave)
+            if problem is None:
+                try:
+                    services.cancel_leave(leave, by=request.user)
+                except services.LeaveError as exc:
+                    problem = str(exc)
+            if problem:
+                self.message_user(request, f"Not cancelled: {leave}. {problem}", messages.ERROR)
+            else:
+                n += 1
         self.message_user(request, f"Cancelled {n} leave request(s).", messages.SUCCESS if n else messages.WARNING)
