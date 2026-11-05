@@ -1,0 +1,19 @@
+{% if perms.questionbank.add_questionblueprint or perms.questionbank.add_question or perms.questionbank.change_question or perms.questionbank.add_knowledgesource %}
+<section class="panel" aria-labelledby="quick-title">
+  <header class="panel__head"><h2 id="quick-title">Quick actions</h2></header>
+  <ul class="quick">
+    {% if perms.questionbank.add_questionblueprint %}
+    <li><a href="{% url 'admin:questionbank_questionblueprint_add' %}"><span>New question blueprint</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
+    {% endif %}
+    {% if perms.questionbank.add_question %}
+    <li><a href="{% url 'admin:questionbank_question_generate' %}"><span>Generate questions with AI</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
+    {% endif %}
+    {% if perms.questionbank.change_question %}
+    <li><a href="{% url 'admin:questionbank_question_changelist' %}?status__exact=draft"><span>Review draft questions</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
+    {% endif %}
+    {% if perms.questionbank.add_knowledgesource %}
+    <li><a href="{% url 'admin:questionbank_knowledgesource_add' %}"><span>Upload a book</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
+    {% endif %}
+  </ul>
+</section>
+{% endif %}

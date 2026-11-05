@@ -1,0 +1,173 @@
+{% extends "admin/change_form.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'css/admin-attendance.css' %}?v=1">
+{% endblock %}
+
+{% block content %}
+{% with form=adminform.form obj=adminform.form.instance %}
+<div class="att-form-wrap">
+
+  {% if form.errors %}
+  <ul class="att-errors">
+    {% for field in form %}{% for err in field.errors %}<li>{{ field.label }}: {{ err }}</li>{% endfor %}{% endfor %}
+    {% for err in form.non_field_errors %}<li>{{ err }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {# Circle status indicator — updates live via JS as the user picks a status #}
+  <div class="att-punch-ring">
+    <div class="att-circle js-att-circle" id="att-circle">
+      <svg id="att-circle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>
+      </svg>
+      <span class="att-circle__label" id="att-circle-label">Attendance</span>
+      <span class="att-circle__time" id="att-circle-time">
+        {% if obj.check_in %}{{ obj.check_in|time:"H:i" }}{% if obj.check_out %} – {{ obj.check_out|time:"H:i" }}{% endif %}{% endif %}
+      </span>
+    </div>
+    {% if obj.pk %}<p>{{ obj.employee }} · {{ obj.date|date:"D j M Y" }}</p>{% endif %}
+  </div>
+
+  <form id="att-form" method="post" novalidate>
+    {% csrf_token %}
+
+    <div class="att-card">
+
+      {# Employee #}
+      <div class="att-row">
+        <span class="att-row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
+        </span>
+        <div class="att-row-body">
+          <span class="att-row-label">Employee</span>
+          {{ form.employee }}
+        </div>
+      </div>
+
+      {# Date #}
+      <div class="att-row">
+        <span class="att-row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+        </span>
+        <div class="att-row-body">
+          <span class="att-row-label">Date</span>
+          <input class="att-date-input" type="date" id="{{ form.date.id_for_label }}" name="{{ form.date.html_name }}" value="{{ form.date.value|default_if_none:'' }}" {% if form.date.field.required %}required{% endif %}>
+        </div>
+      </div>
+
+      {# Status — pill group, replaces the default <select> #}
+      <div class="att-row">
+        <span class="att-row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+        </span>
+        <div class="att-row-body">
+          <span class="att-row-label">Status</span>
+          <div class="att-status-group" role="radiogroup" aria-label="Status">
+            {% with cur=form.status.value %}
+            <span class="att-status-pill att-status-pill--present">
+              <input type="radio" name="{{ form.status.html_name }}" id="s_present" value="present" {% if cur == 'present' %}checked{% endif %}>
+              <label for="s_present">✓ Present</label>
+            </span>
+            <span class="att-status-pill att-status-pill--late">
+              <input type="radio" name="{{ form.status.html_name }}" id="s_late" value="late" {% if cur == 'late' %}checked{% endif %}>
+              <label for="s_late">⏰ Late</label>
+            </span>
+            <span class="att-status-pill att-status-pill--half">
+              <input type="radio" name="{{ form.status.html_name }}" id="s_half" value="half_day" {% if cur == 'half_day' %}checked{% endif %}>
+              <label for="s_half">½ Half day</label>
+            </span>
+            <span class="att-status-pill att-status-pill--absent">
+              <input type="radio" name="{{ form.status.html_name }}" id="s_absent" value="absent" {% if cur == 'absent' %}checked{% endif %}>
+              <label for="s_absent">✗ Absent</label>
+            </span>
+            <span class="att-status-pill att-status-pill--leave">
+              <input type="radio" name="{{ form.status.html_name }}" id="s_leave" value="on_leave" {% if cur == 'on_leave' %}checked{% endif %}>
+              <label for="s_leave">🏖 On leave</label>
+            </span>
+            {% endwith %}
+          </div>
+        </div>
+      </div>
+
+      {# Check in / out times #}
+      <div class="att-row">
+        <span class="att-row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+        </span>
+        <div class="att-row-body">
+          <span class="att-row-label">Times</span>
+          <div class="att-time-pair">
+            <input class="att-time-input" type="time" id="{{ form.check_in.id_for_label }}" name="{{ form.check_in.html_name }}" value="{{ form.check_in.value|default_if_none:'' }}">
+            <span>to</span>
+            <input class="att-time-input" type="time" id="{{ form.check_out.id_for_label }}" name="{{ form.check_out.html_name }}" value="{{ form.check_out.value|default_if_none:'' }}">
+          </div>
+        </div>
+      </div>
+
+      {# Note #}
+      <div class="att-row">
+        <span class="att-row-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg>
+        </span>
+        <div class="att-row-body">
+          <span class="att-row-label">Note <span style="font-weight:400;text-transform:none">(optional)</span></span>
+          <textarea class="att-note" id="{{ form.note.id_for_label }}" name="{{ form.note.html_name }}" rows="2" maxlength="{{ form.note.field.max_length }}">{{ form.note.value|default_if_none:'' }}</textarea>
+        </div>
+      </div>
+
+    </div>{# /att-card #}
+
+    <div class="att-toolbar">
+      <button type="submit" name="_save" class="att-btn att-btn--primary">
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z"/></svg>
+        Save
+      </button>
+      <button type="submit" name="_addanother" class="att-btn att-btn--secondary">Save &amp; add another</button>
+      <button type="submit" name="_continue" class="att-btn att-btn--secondary">Save &amp; continue editing</button>
+      <span class="att-toolbar-spacer"></span>
+      {% if obj.pk %}
+      <a href="{% url opts|admin_urlname:'delete' obj.pk %}" class="att-btn att-btn--ghost">
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M9 2a1 1 0 0 0-.894.553L7.382 4H4a1 1 0 0 0 0 2v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6a1 1 0 1 0-2 0v10H6V6h8a1 1 0 0 0 0-2h-3.382l-.724-1.447A1 1 0 0 0 9 2ZM7 8a1 1 0 0 1 2 0v6a1 1 0 1 1-2 0V8Zm4 0a1 1 0 0 1 2 0v6a1 1 0 1 1-2 0V8Z" clip-rule="evenodd"/></svg>
+        Delete
+      </a>
+      {% endif %}
+    </div>
+
+  </form>
+</div>
+
+<script>
+(function () {
+  var circle   = document.getElementById('att-circle');
+  var label    = document.getElementById('att-circle-label');
+  var icon     = document.getElementById('att-circle-icon');
+
+  var ICONS = {
+    present: '<circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/>',
+    late:    '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+    half_day:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5"/><path d="M9 15h6"/>',
+    absent:  '<circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/>',
+    on_leave:'<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>',
+  };
+  var LABELS = { present:'Present', late:'Late', half_day:'Half day', absent:'Absent', on_leave:'On leave' };
+  var CLASSES = { present:'att-circle--in', late:'att-circle--out', half_day:'att-circle--out', absent:'att-circle--absent', on_leave:'att-circle--leave' };
+
+  function update(val) {
+    circle.className = 'att-circle js-att-circle ' + (CLASSES[val] || '');
+    label.textContent = LABELS[val] || 'Attendance';
+    icon.innerHTML = ICONS[val] || ICONS.present;
+  }
+
+  document.querySelectorAll('input[name="{{ form.status.html_name }}"]').forEach(function(r) {
+    r.addEventListener('change', function() { update(this.value); });
+    if (r.checked) update(r.value);
+  });
+})();
+</script>
+{% endwith %}
+{% endblock %}
+
+{% block submit_buttons_bottom %}{% endblock %}

@@ -1,0 +1,26 @@
+{% load i18n log admin_filters %}
+<section class="panel" id="recent-actions-module" aria-labelledby="recent-title">
+  <header class="panel__head"><h2 id="recent-title">{% translate 'Recent actions' %}</h2></header>
+  {% get_admin_log 6 as admin_log for_user user %}
+  {% if not admin_log %}
+  <p class="empty">{% translate 'Nothing yet. Changes you make will show up here.' %}</p>
+  {% else %}
+  <ol class="timeline">
+    {% for entry in admin_log %}
+    <li class="timeline__item timeline__item--{% if entry.is_addition %}add{% elif entry.is_change %}change{% else %}delete{% endif %}">
+      <span class="timeline__dot" aria-hidden="true"></span>
+      <div>
+        <p class="timeline__title">
+          {% if entry.is_deletion or not entry.get_admin_url %}{{ entry.object_repr|to_object_display_value }}{% else %}<a href="{{ entry.get_admin_url }}">{{ entry.object_repr|to_object_display_value }}</a>{% endif %}
+        </p>
+        <p class="timeline__meta">
+          {% if entry.is_addition %}Added{% elif entry.is_change %}Edited{% else %}Deleted{% endif %}
+          · {% if entry.content_type %}{% filter capfirst %}{{ entry.content_type.name }}{% endfilter %}{% else %}{% translate 'Unknown content' %}{% endif %}
+          · <time datetime="{{ entry.action_time|date:'c' }}">{{ entry.action_time|timesince }} ago</time>
+        </p>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+</section>

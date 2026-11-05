@@ -1,0 +1,19 @@
+{% if stats.upcoming_events %}
+<section class="panel" aria-labelledby="upcoming-title">
+  <header class="panel__head panel__head--row">
+    <h2 id="upcoming-title">Coming up</h2>
+    <a class="dash-link" href="{% url 'admin:questionbank_calendar' %}">Calendar</a>
+  </header>
+  <ul class="timeline">
+    {% for e in stats.upcoming_events %}
+    <li class="timeline__item timeline__item--{% if e.event_type == 'question_deadline' %}delete{% elif e.event_type == 'exam_series' or e.event_type == 'internal_exam' %}change{% else %}add{% endif %}">
+      <span class="timeline__dot" aria-hidden="true"></span>
+      <div>
+        <p class="timeline__title"><a href="{% url 'admin:questionbank_academicevent_change' e.pk %}">{{ e.title }}</a></p>
+        <p class="timeline__meta">{{ e.start_date|date:"D j M" }}{% if e.end_date and e.end_date != e.start_date %} – {{ e.end_date|date:"j M" }}{% endif %} · {{ e.get_event_type_display }}</p>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

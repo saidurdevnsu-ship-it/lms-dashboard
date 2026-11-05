@@ -1,0 +1,16 @@
+{% if stats.attention %}
+<section class="panel" aria-labelledby="attn-title">
+  <header class="panel__head"><h2 id="attn-title">Needs your attention</h2></header>
+  <ul class="attn">
+    {% for item in stats.attention %}
+    <li class="attn__item">
+      <span class="attn__dot attn__dot--{{ item.kind }}" aria-hidden="true"></span>
+      <div class="attn__text">
+        <p class="attn__label"><a href="{{ item.url }}">{{ item.label }}</a></p>
+        <p class="attn__meta">{{ item.meta }}</p>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

@@ -1,0 +1,7 @@
+{% load hr_tags %}
+{% if stats.has_employee %}
+<section class="panel" aria-labelledby="today-title">
+  <header class="panel__head"><h2 id="today-title">Today</h2></header>
+  <div class="today-body">{% punch_button embedded=True %}</div>
+</section>
+{% endif %}

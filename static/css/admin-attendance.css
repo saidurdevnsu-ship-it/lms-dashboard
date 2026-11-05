@@ -1,0 +1,214 @@
+/* Attendance add/change form — circle punch design */
+
+.att-form-wrap {
+  max-width: 560px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ── Punch circle ────────────────────────────────────────────── */
+.att-punch-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0 24px;
+}
+
+.att-circle {
+  position: relative;
+  width: 148px;
+  height: 148px;
+  border-radius: 999px;
+  background: var(--sts-brand-50);
+  border: 3px solid var(--sts-brand-200);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  cursor: default;
+}
+.att-circle--in {
+  background: #f0fdf4;
+  border-color: #16a34a;
+  box-shadow: 0 0 0 6px #dcfce7;
+}
+.att-circle--out {
+  background: #eff6ff;
+  border-color: var(--sts-brand-500);
+  box-shadow: 0 0 0 6px var(--sts-brand-50);
+}
+.att-circle--absent {
+  background: #fef2f2;
+  border-color: #dc2626;
+  box-shadow: 0 0 0 6px #fee2e2;
+}
+.att-circle--leave {
+  background: #faf5ff;
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 6px #ede9fe;
+}
+.att-circle svg { width: 36px; height: 36px; color: var(--sts-brand-500); }
+.att-circle--in  svg { color: #16a34a; }
+.att-circle--out svg { color: var(--sts-brand-500); }
+.att-circle--absent svg { color: #dc2626; }
+.att-circle--leave  svg { color: #7c3aed; }
+
+.att-circle__label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--body-quiet-color);
+}
+.att-circle--in    .att-circle__label { color: #16a34a; }
+.att-circle--out   .att-circle__label { color: var(--sts-brand-600); }
+.att-circle--absent .att-circle__label { color: #dc2626; }
+.att-circle--leave  .att-circle__label { color: #7c3aed; }
+
+.att-circle__time {
+  font-size: 11px;
+  color: var(--body-quiet-color);
+  font-weight: 500;
+}
+
+.att-punch-ring > p {
+  font-size: 13px;
+  color: var(--body-quiet-color);
+  margin: 0;
+}
+
+/* ── Form card ───────────────────────────────────────────────── */
+.att-card {
+  border: 1px solid var(--hairline-color);
+  border-radius: var(--sts-radius);
+  background: var(--sts-surface);
+  box-shadow: var(--sts-shadow);
+  overflow: hidden;
+}
+
+.att-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hairline-color);
+}
+.att-row:last-child { border-bottom: 0; }
+
+.att-row-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--darkened-bg);
+  color: var(--body-quiet-color);
+  flex: none;
+  margin-top: 1px;
+}
+.att-row-icon svg { width: 15px; height: 15px; }
+
+.att-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.att-row-label { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--body-quiet-color); }
+
+/* Inputs */
+.att-select,
+.att-date-input,
+.att-time-input {
+  padding: 7px 10px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--body-bg);
+  color: var(--body-fg);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  min-width: 0;
+}
+.att-select:focus,
+.att-date-input:focus,
+.att-time-input:focus {
+  outline: none;
+  border-color: var(--sts-brand-500);
+  box-shadow: 0 0 0 3px var(--sts-ring);
+}
+.att-select { width: 100%; }
+.att-date-input { width: 160px; }
+
+/* Time pair */
+.att-time-pair { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.att-time-pair span { font-size: 12px; color: var(--body-quiet-color); font-weight: 500; }
+.att-time-input { width: 110px; }
+
+/* Status pill group */
+.att-status-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.att-status-pill {
+  position: relative;
+  display: inline-block;
+}
+.att-status-pill input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.att-status-pill label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--body-medium-color);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+  user-select: none;
+}
+.att-status-pill label:hover { border-color: var(--sts-brand-300); background: var(--sts-brand-50); color: var(--sts-brand-700); }
+.att-status-pill input:checked + label { border-color: var(--sts-brand-500); background: var(--sts-brand-50); color: var(--sts-brand-700); font-weight: 650; }
+.att-status-pill input:focus-visible + label { outline: 2px solid var(--sts-brand-500); outline-offset: 2px; }
+
+/* Status-specific checked colours */
+.att-status-pill--present input:checked + label { border-color: #16a34a; background: #f0fdf4; color: #15803d; }
+.att-status-pill--absent  input:checked + label { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
+.att-status-pill--leave   input:checked + label { border-color: #7c3aed; background: #faf5ff; color: #6d28d9; }
+.att-status-pill--late    input:checked + label { border-color: #d97706; background: #fffbeb; color: #b45309; }
+.att-status-pill--half    input:checked + label { border-color: #0891b2; background: #ecfeff; color: #0e7490; }
+
+/* Note input */
+.att-note { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1.5px solid var(--border-color); border-radius: 8px; background: var(--body-bg); color: var(--body-fg); font: inherit; font-size: 13.5px; resize: none; }
+.att-note:focus { outline: none; border-color: var(--sts-brand-500); box-shadow: 0 0 0 3px var(--sts-ring); }
+
+/* Errors */
+.att-errors { margin: 0 0 4px; padding: 10px 14px; border-radius: 10px; background: var(--message-error-bg); color: var(--error-fg); font-size: 13px; list-style: none; }
+.att-errors li { list-style: none; }
+
+/* Toolbar */
+.att-toolbar { display: flex; align-items: center; gap: 10px; padding-top: 4px; flex-wrap: wrap; }
+.att-btn {
+  display: inline-flex; align-items: center; gap: 7px; padding: 10px 20px;
+  border: none; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600;
+  cursor: pointer; text-decoration: none; transition: background-color 0.15s;
+}
+.att-btn--primary { background: var(--sts-brand-600); color: #fff; }
+.att-btn--primary:hover { background: var(--sts-brand-700); color: #fff; text-decoration: none; }
+.att-btn--secondary { background: var(--darkened-bg); color: var(--body-medium-color); border: 1px solid var(--hairline-color); }
+.att-btn--secondary:hover { background: var(--border-color); color: var(--body-loud-color); }
+.att-btn--ghost { background: transparent; color: var(--body-quiet-color); }
+.att-btn--ghost:hover { color: var(--error-fg); }
+.att-btn:focus-visible { outline: 2px solid var(--sts-brand-500); outline-offset: 2px; border-radius: 10px; }
+.att-btn svg { width: 15px; height: 15px; }
+.att-toolbar-spacer { flex: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .att-circle, .att-btn, .att-status-pill label { transition: none; }
+}

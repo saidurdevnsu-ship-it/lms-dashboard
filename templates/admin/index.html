@@ -1,16 +1,16 @@
 {% extends "admin/base_site.html" %}
-{% load i18n static log admin_filters dashboard_tags hr_tags %}
+{% load i18n static dashboard_tags %}
 
-{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static 'css/admin-dashboard.css' %}?v=7"><link rel="stylesheet" href="{% static 'css/admin-papers.css' %}?v=3"><link rel="stylesheet" href="{% static 'css/punch.css' %}">{% endblock %}
+{% block extrastyle %}{{ block.super }}
+<link rel="stylesheet" href="{% static 'css/admin-dashboard.css' %}?v=8">
+<link rel="stylesheet" href="{% static 'css/admin-papers.css' %}?v=3">
+<link rel="stylesheet" href="{% static 'css/punch.css' %}">
+{% endblock %}
 
 {% block coltype %}colM{% endblock %}
-
 {% block bodyclass %}{{ block.super }} dashboard sts-dashboard{% endblock %}
-
 {% block nav-breadcrumbs %}{% endblock %}
-
 {% block nav-sidebar %}{% endblock %}
-
 {% block content_title %}{% endblock %}
 
 {% block content %}
@@ -18,169 +18,20 @@
 {% firstof user.get_short_name user.get_username as display_name %}
 
 <div class="dash">
-
-  <section class="dash-hero" aria-labelledby="dash-title">
-    <div>
-      <p class="dash-hero__eyebrow">{% now "l, j F Y" %}</p>
-      <h1 id="dash-title">{{ stats.greeting }}, {{ display_name }}</h1>
-      {% if stats.user_meta %}<p class="dash-hero__sub">{{ stats.user_meta }}</p>{% endif %}
-    </div>
-    {% if perms.questionbank.add_question %}
-    <a class="dash-btn dash-btn--primary" href="{% url 'admin:questionbank_question_generate' %}">
-      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2Zm7 12 .9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9L19 14Z"/></svg>
-      Generate questions
-    </a>
-    {% endif %}
-  </section>
+  {% include "admin/dashboard/_hero.html" %}
 
   <div class="dash-grid">
     <div class="dash-main">
-
-      <section aria-labelledby="ws-title">
-        <h2 id="ws-title" class="dash-section-title">Academic workspace</h2>
-        <div class="wc-cards">
-
-          {% if perms.questionbank.view_question %}
-          <a class="wc-card" href="{% url 'admin:questionbank_question_changelist' %}">
-            {% if stats.questions_draft %}<span class="wc-card__badge wc-card__badge--warn">{{ stats.questions_draft }} to review</span>{% endif %}
-            <span class="wc-card__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><path d="M12 17h.01"/></svg>
-            </span>
-            <strong class="wc-card__name">Question Generation</strong>
-            <p class="wc-card__desc">Generate questions from books and review drafts.</p>
-            <span class="wc-card__open">Open →</span>
-          </a>
-          {% endif %}
-
-          {% if perms.questionbank.view_questionblueprint %}
-          <a class="wc-card" href="{% url 'admin:questionbank_questionblueprint_changelist' %}">
-            {% with nearest=stats.exam_prep|first %}{% if nearest %}<span class="wc-card__badge wc-card__badge--due">Due {{ nearest.due_date|date:"j M" }}</span>{% endif %}{% endwith %}
-            <span class="wc-card__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-            </span>
-            <strong class="wc-card__name">Blueprints</strong>
-            <p class="wc-card__desc">Plan exam papers and send them for HOD review.</p>
-            <span class="wc-card__open">Open →</span>
-          </a>
-          {% endif %}
-
-          {% if perms.questionbank.view_academicevent %}
-          <a class="wc-card" href="{% url 'admin:questionbank_calendar' %}">
-            <span class="wc-card__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
-            </span>
-            <strong class="wc-card__name">Academic calendar</strong>
-            <p class="wc-card__desc">Exams, deadlines and holidays.</p>
-            <span class="wc-card__open">Open →</span>
-          </a>
-          {% endif %}
-
-          <div class="wc-card wc-card--dim">
-            <span class="wc-card__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg>
-            </span>
-            <strong class="wc-card__name">Lesson Plans</strong>
-            <p class="wc-card__desc">AI-generated Cambridge lesson plans for Grades 6–10.</p>
-            <span class="wc-card__open wc-card__open--dim">Coming soon</span>
-          </div>
-
-        </div>
-      </section>
-
+      {% include "admin/dashboard/_workspace_cards.html" %}
     </div>
 
     <aside class="dash-side">
-
       <h2 class="dash-section-title">Overview</h2>
-
-      {% if stats.has_employee %}
-      <section class="panel" aria-labelledby="today-title">
-        <header class="panel__head"><h2 id="today-title">Today</h2></header>
-        <div class="today-body">{% punch_button embedded=True %}</div>
-      </section>
-      {% endif %}
-
-      {% if stats.attention %}
-      <section class="panel" aria-labelledby="attn-title">
-        <header class="panel__head"><h2 id="attn-title">Needs your attention</h2></header>
-        <ul class="attn">
-          {% for item in stats.attention %}
-          <li class="attn__item">
-            <span class="attn__dot attn__dot--{{ item.kind }}" aria-hidden="true"></span>
-            <div class="attn__text">
-              <p class="attn__label"><a href="{{ item.url }}">{{ item.label }}</a></p>
-              <p class="attn__meta">{{ item.meta }}</p>
-            </div>
-          </li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endif %}
-
-      {% if stats.upcoming_events %}
-      <section class="panel" aria-labelledby="upcoming-title">
-        <header class="panel__head panel__head--row">
-          <h2 id="upcoming-title">Coming up</h2>
-          <a class="dash-link" href="{% url 'admin:questionbank_calendar' %}">Calendar</a>
-        </header>
-        <ul class="timeline">
-          {% for e in stats.upcoming_events %}
-          <li class="timeline__item timeline__item--{% if e.event_type == 'question_deadline' %}delete{% elif e.event_type == 'exam_series' or e.event_type == 'internal_exam' %}change{% else %}add{% endif %}">
-            <span class="timeline__dot" aria-hidden="true"></span>
-            <div>
-              <p class="timeline__title"><a href="{% url 'admin:questionbank_academicevent_change' e.pk %}">{{ e.title }}</a></p>
-              <p class="timeline__meta">{{ e.start_date|date:"D j M" }}{% if e.end_date and e.end_date != e.start_date %} – {{ e.end_date|date:"j M" }}{% endif %} · {{ e.get_event_type_display }}</p>
-            </div>
-          </li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endif %}
-
-      <section class="panel" aria-labelledby="quick-title">
-        <header class="panel__head"><h2 id="quick-title">Quick actions</h2></header>
-        <ul class="quick">
-          {% if perms.questionbank.add_questionblueprint %}
-          <li><a href="{% url 'admin:questionbank_questionblueprint_add' %}"><span>New question blueprint</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
-          {% endif %}
-          {% if perms.questionbank.add_question %}
-          <li><a href="{% url 'admin:questionbank_question_generate' %}"><span>Generate questions with AI</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
-          {% endif %}
-          {% if perms.questionbank.change_question %}
-          <li><a href="{% url 'admin:questionbank_question_changelist' %}?status__exact=draft"><span>Review draft questions</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
-          {% endif %}
-          {% if perms.questionbank.add_knowledgesource %}
-          <li><a href="{% url 'admin:questionbank_knowledgesource_add' %}"><span>Upload a book</span><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/></svg></a></li>
-          {% endif %}
-        </ul>
-      </section>
-
-      <section class="panel" id="recent-actions-module" aria-labelledby="recent-title">
-        <header class="panel__head"><h2 id="recent-title">{% translate 'Recent actions' %}</h2></header>
-        {% get_admin_log 6 as admin_log for_user user %}
-        {% if not admin_log %}
-        <p class="empty">{% translate 'Nothing yet. Changes you make will show up here.' %}</p>
-        {% else %}
-        <ol class="timeline">
-          {% for entry in admin_log %}
-          <li class="timeline__item timeline__item--{% if entry.is_addition %}add{% elif entry.is_change %}change{% else %}delete{% endif %}">
-            <span class="timeline__dot" aria-hidden="true"></span>
-            <div>
-              <p class="timeline__title">
-                {% if entry.is_deletion or not entry.get_admin_url %}{{ entry.object_repr|to_object_display_value }}{% else %}<a href="{{ entry.get_admin_url }}">{{ entry.object_repr|to_object_display_value }}</a>{% endif %}
-              </p>
-              <p class="timeline__meta">
-                {% if entry.is_addition %}Added{% elif entry.is_change %}Edited{% else %}Deleted{% endif %}
-                · {% if entry.content_type %}{% filter capfirst %}{{ entry.content_type.name }}{% endfilter %}{% else %}{% translate 'Unknown content' %}{% endif %}
-                · <time datetime="{{ entry.action_time|date:'c' }}">{{ entry.action_time|timesince }} ago</time>
-              </p>
-            </div>
-          </li>
-          {% endfor %}
-        </ol>
-        {% endif %}
-      </section>
-
+      {% include "admin/dashboard/_today.html" %}
+      {% include "admin/dashboard/_attention.html" %}
+      {% include "admin/dashboard/_coming_up.html" %}
+      {% include "admin/dashboard/_quick_actions.html" %}
+      {% include "admin/dashboard/_recent_actions.html" %}
     </aside>
   </div>
 </div>
