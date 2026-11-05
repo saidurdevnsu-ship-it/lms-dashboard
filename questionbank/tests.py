@@ -2,10 +2,11 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 from datetime import date, timedelta
 from io import BytesIO, StringIO
 from types import SimpleNamespace
-from unittest import mock
+from unittest import mock, skipUnless
 
 import pymupdf
 from docx import Document
@@ -16,10 +17,12 @@ from django.core import mail
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.db import connection, transaction
 from django.db.models import UniqueConstraint
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import escape
 
 from audit.models import AuditEvent
 from notifications.models import Notification
@@ -258,6 +261,529 @@ class FinalPaperTests(BlueprintTestCase):
         paper.refresh_from_db()
         self.assertEqual(paper.generation_error, "Claude is busy")
         self.assertFalse(paper.is_generating)
+
+
+class FinalPaperGuardTests(BlueprintTestCase):
+    """A confidential paper must not be corrupted while the AI writes it: only the run that owns the paper may
+    save, staff can't edit meanwhile, and locking always saves the copy that is in the database."""
+
+    make_paper = FinalPaperTests.make_paper
+    post_questions = FinalPaperTests.post_questions
+
+    def stale_reply(self, n=3):
+        return {"questions": [
+            {"section": "whatever", "question_type": "short", "text": f"Stale question {i}?", "options": [],
+             "answer": "A", "explanation": "", "marks": 99, "source_reference": "Ch 9"}
+            for i in range(n)
+        ]}
+
+    def token_of(self, paper):
+        return FinalPaper.objects.values_list("generation_started_at", flat=True).get(pk=paper.pk)
+
+    def start(self, paper):
+        """Claim the paper for a background run and return that run's token."""
+        with mock.patch.object(ai.threading, "Thread"):
+            ai.start_final_paper(paper.blueprint, self.controller)
+        return self.token_of(paper)
+
+    def stall(self, paper):
+        """Make the run that owns the paper look as if it started before the 15-minute timeout and return its
+        token: the run is still alive and still owns the row, but the page is editable and claimable again."""
+        FinalPaper.objects.filter(pk=paper.pk).update(
+            generation_started_at=timezone.now() - FinalPaper.GENERATION_TIMEOUT - timedelta(minutes=1))
+        paper.refresh_from_db()
+        return self.token_of(paper)
+
+    def admin_for(self, model):
+        from django.contrib.admin.sites import site
+        return site._registry[model]
+
+    def paper_admin_and_inline(self):
+        from django.contrib.admin.sites import site
+        paper_admin = self.admin_for(FinalPaper)
+        return paper_admin, paper_admin.inlines[0](FinalPaper, site)
+
+    def test_old_run_finishing_late_does_not_overwrite_the_newer_run(self):
+        paper = self.make_paper()
+        texts = list(paper.questions.values_list("text", flat=True))
+        self.start(paper)
+        # The old run hangs; it passes the timeout, so a new run claims the paper.
+        old_token = self.stall(paper)
+        new_token = self.start(paper)
+        self.assertNotEqual(old_token, new_token)
+
+        with mock.patch.object(ai, "_ask_claude", return_value=self.stale_reply()):
+            ai.write_final_paper(paper.pk, self.controller.pk, old_token)
+
+        paper.refresh_from_db()
+        self.assertEqual(list(paper.questions.values_list("text", flat=True)), texts)
+        self.assertEqual(self.token_of(paper), new_token)  # the newer run still owns the paper
+        self.assertTrue(paper.is_generating)
+        self.assertEqual(paper.generation_error, "")
+
+    def test_late_result_of_a_replaced_run_is_discarded_and_reported(self):
+        paper = self.make_paper()
+        self.start(paper)
+        old_token = self.stall(paper)
+        self.assertNotEqual(old_token, self.start(paper))  # a real second claim replaces the stuck run
+        with mock.patch.object(ai, "_ask_claude", return_value=self.stale_reply()):
+            ai.write_final_paper(paper.pk, self.controller.pk, old_token)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.controller, title__startswith="Final paper not generated",
+            body__startswith="A newer request replaced this one").exists())
+
+    def test_late_single_question_result_of_a_replaced_run_is_discarded(self):
+        paper = self.make_paper()
+        before = list(paper.questions.values_list("text", flat=True))
+        with mock.patch.object(ai.threading, "Thread"):
+            ai.start_question_regeneration(paper, 2, self.controller)
+        old_token = self.stall(paper)
+        self.assertNotEqual(old_token, self.start(paper))  # a real second claim replaces the stuck run
+        with mock.patch.object(ai, "_ask_claude", return_value=FinalPaperTests.one_question(self)):
+            ai.rewrite_final_question(paper.pk, 2, self.controller.pk, old_token)
+        self.assertEqual(list(paper.questions.values_list("text", flat=True)), before)
+
+    def test_editing_after_the_timeout_takes_the_paper_back_from_a_stuck_run(self):
+        """A run that outlived the timeout still carries its token, but the page is editable again. The edit
+        must win: the paper is taken back, and the stuck run's late result is discarded."""
+        paper = self.make_paper()
+        self.start(paper)
+        stuck_token = self.stall(paper)
+        self.assertFalse(paper.is_generating)  # the page invites the controller to edit
+
+        self.assertEqual(self.post_questions(paper, text="Fixed by the controller?").status_code, 302)
+        self.assertIsNone(self.token_of(paper))  # saving took the paper back from the stuck run
+
+        with mock.patch.object(ai, "_ask_claude", return_value=self.stale_reply()):
+            ai.write_final_paper(paper.pk, self.controller.pk, stuck_token)
+
+        self.assertEqual(paper.questions.count(), 3)
+        self.assertEqual(paper.questions.first().text, "Fixed by the controller?")
+        self.assertFalse(paper.questions.filter(text__startswith="Stale question").exists())
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.controller, title__startswith="Final paper not generated",
+            body__startswith="A newer request replaced this one").exists())
+
+    def test_edit_is_refused_while_the_ai_is_writing_and_allowed_afterwards(self):
+        paper = self.make_paper()
+        self.start(paper)
+        response = self.post_questions(paper, text="Edited mid-generation?")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(paper.questions.first().text, "Question 0?")
+        page = self.client.get(response["Location"])
+        self.assertContains(page, "The AI is writing this paper. You can edit it once it&#x27;s ready.")
+
+        FinalPaper.objects.filter(pk=paper.pk).update(generation_started_at=None)
+        paper.refresh_from_db()
+        self.assertEqual(self.post_questions(paper, text="Edited when ready?").status_code, 302)
+        self.assertEqual(paper.questions.first().text, "Edited when ready?")
+
+    def test_questions_and_notes_are_read_only_while_the_ai_is_writing(self):
+        paper = self.make_paper()
+        request = SimpleNamespace(user=self.controller)
+        paper_admin, inline = self.paper_admin_and_inline()
+        self.assertTrue(paper_admin.has_change_permission(request, paper))
+        self.assertTrue(inline.has_change_permission(request, paper))
+
+        self.start(paper)
+        paper.refresh_from_db()
+        self.assertFalse(paper_admin.has_change_permission(request, paper))
+        self.assertFalse(inline.has_change_permission(request, paper))
+        self.assertFalse(inline.has_add_permission(request, paper))
+        self.assertFalse(inline.has_delete_permission(request, paper))
+        # Viewing is still allowed.
+        self.assertTrue(paper_admin.has_view_permission(request, paper))
+        self.client.force_login(self.controller)
+        self.assertEqual(
+            self.client.get(reverse("admin:questionbank_finalpaper_change", args=[paper.pk])).status_code, 200)
+
+    def test_lock_from_a_stale_copy_rechecks_the_fresh_row(self):
+        paper = self.make_paper()
+        stale = FinalPaper.objects.get(pk=paper.pk)
+        self.start(paper)
+        with self.assertRaisesMessage(workflow.WorkflowError, "still writing"):
+            workflow.lock_final(stale, self.controller)
+        paper.refresh_from_db()
+        self.assertEqual(paper.status, FinalPaper.Status.GENERATED)
+
+    def test_lock_does_not_overwrite_fields_changed_since_the_page_was_opened(self):
+        paper = self.make_paper()
+        stale = FinalPaper.objects.get(pk=paper.pk)
+        stale.controller_notes = "Typed in a tab opened long ago"
+        FinalPaper.objects.filter(pk=paper.pk).update(controller_notes="Saved by the exam controller")
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.lock_final(stale, self.controller)
+        paper.refresh_from_db()
+        self.assertEqual(paper.status, FinalPaper.Status.LOCKED)
+        self.assertEqual(paper.locked_by, self.controller)
+        self.assertEqual(paper.controller_notes, "Saved by the exam controller")
+        self.assertEqual(stale.status, FinalPaper.Status.LOCKED)  # the caller's copy knows it is locked
+        self.assertTrue(Notification.objects.filter(title="Final paper prepared: Science mid-term").exists())
+
+
+class FinalPaperRoleTests(BlueprintTestCase):
+    """The same guard seen from each role that may touch a final paper: a non-superuser exam controller and an
+    admin walk generate -> read-only -> result -> edit -> lock, and the roles that must never see the paper
+    still can't, including through the new save path."""
+
+    make_paper = FinalPaperTests.make_paper
+    one_question = FinalPaperTests.one_question
+    stale_reply = FinalPaperGuardTests.stale_reply
+    token_of = FinalPaperGuardTests.token_of
+    start = FinalPaperGuardTests.start
+    stall = FinalPaperGuardTests.stall
+    paper_admin_and_inline = FinalPaperGuardTests.paper_admin_and_inline
+    admin_for = FinalPaperGuardTests.admin_for
+
+    def setUp(self):
+        super().setUp()
+        call_command("setup_academics", stdout=StringIO())
+        User = get_user_model()
+        self.exam_controller = User.objects.create_user("examctl", password="Pw-12345!", is_staff=True)
+        self.exam_controller.groups.add(Group.objects.get(name="Exam Controller"))
+        self.exam_controller = User.objects.get(pk=self.exam_controller.pk)
+        self.assertTrue(self.exam_controller.has_perm(workflow.FINAL_PERM))
+        self.assertFalse(self.exam_controller.is_superuser)
+
+    def url(self, paper):
+        return reverse("admin:questionbank_finalpaper_change", args=[paper.pk])
+
+    def post_form(self, paper, user, notes="", **first_changes):
+        """post_questions, but as any user and able to change the controller notes too."""
+        questions = list(paper.questions.all())
+        data = {"controller_notes": notes, "questions-TOTAL_FORMS": str(len(questions)),
+                "questions-INITIAL_FORMS": str(len(questions)), "questions-MIN_NUM_FORMS": "0",
+                "questions-MAX_NUM_FORMS": "1000", "_save": "Save"}
+        for i, q in enumerate(questions):
+            values = {"id": q.pk, "paper": paper.pk, "order": q.order, "section": q.section,
+                      "question_type": q.question_type, "marks": q.marks, "text": q.text,
+                      "options": json.dumps(q.options), "answer": q.answer, "explanation": q.explanation,
+                      "source_reference": q.source_reference}
+            if i == 0:
+                values.update(first_changes)
+            data.update({f"questions-{i}-{k}": v for k, v in values.items()})
+            data[f"initial-questions-{i}-options"] = json.dumps(q.options)
+        self.client.force_login(user)
+        return self.client.post(self.url(paper), data)
+
+    # ---------- the whole journey, per role ----------
+
+    def walk_the_paper(self, user):
+        paper = self.make_paper()
+        self.client.force_login(user)
+        self.assertEqual(self.client.get(self.url(paper)).status_code, 200)
+
+        with mock.patch.object(ai.threading, "Thread"):
+            started = self.client.post(self.url(paper), {"_regenerate": "1"}, follow=True)
+        self.assertContains(started, "The AI is writing a new set of questions")
+        paper.refresh_from_db()
+        token = self.token_of(paper)
+
+        paper_admin, inline = self.paper_admin_and_inline()
+        request = SimpleNamespace(user=user)
+        self.assertFalse(paper_admin.has_change_permission(request, paper))
+        self.assertFalse(inline.has_change_permission(request, paper))
+        self.assertTrue(paper_admin.has_view_permission(request, paper))  # reading is still fine
+        self.assertEqual(self.client.get(self.url(paper)).status_code, 200)
+        refused = self.post_form(paper, user, text="Sneaky edit?")
+        self.assertContains(self.client.get(refused["Location"]), escape(paper_admin.GENERATING_MESSAGE))
+        self.assertEqual(paper.questions.first().text, "Question 0?")
+
+        with mock.patch.object(ai, "_ask_claude", return_value=claude_reply(3)):
+            ai.write_final_paper(paper.pk, user.pk, token)
+        paper.refresh_from_db()
+        self.assertIsNone(paper.generation_started_at)
+        self.assertTrue(Notification.objects.filter(recipient=user, title__startswith="Final paper ready").exists())
+
+        self.assertEqual(self.post_form(paper, user, text="The controller's wording?").status_code, 302)
+        self.assertEqual(paper.questions.first().text, "The controller's wording?")
+        with self.captureOnCommitCallbacks(execute=True):
+            locked = self.client.post(self.url(paper), {"_lock": "1"}, follow=True)
+        self.assertContains(locked, "Locked. This is now the final paper.")
+        paper.refresh_from_db()
+        self.assertEqual((paper.status, paper.locked_by), (FinalPaper.Status.LOCKED, user))
+        self.assertEqual(paper.questions.first().text, "The controller's wording?")
+
+    def test_exam_controller_without_superuser_walks_the_whole_paper(self):
+        self.walk_the_paper(self.exam_controller)
+
+    def test_admin_walks_the_whole_paper(self):
+        self.walk_the_paper(self.controller)
+
+    # ---------- a run in flight ----------
+
+    def test_no_role_can_edit_or_race_a_run_in_flight(self):
+        paper = self.make_paper()
+        self.start(paper)
+        before = list(paper.questions.values_list("text", flat=True))
+        for user in (self.controller, self.exam_controller):
+            with self.subTest(user=user.username):
+                self.assertEqual(self.post_form(paper, user, notes="typed while writing",
+                                                text="Edit mid-run?").status_code, 302)
+                self.client.force_login(user)
+                self.assertContains(self.client.post(self.url(paper),
+                                                     {"_regenerate_one": "1", "question_order": "2"}, follow=True),
+                                    "The AI is already writing this paper")
+                self.assertContains(self.client.post(self.url(paper), {"_regenerate": "1"}, follow=True),
+                                    "The AI is already writing this paper")
+                self.assertContains(self.client.post(self.url(paper), {"_lock": "1"}, follow=True),
+                                    "The AI is still writing this paper")
+        paper.refresh_from_db()
+        self.assertEqual(list(paper.questions.values_list("text", flat=True)), before)
+        self.assertEqual(paper.controller_notes, "")  # the notes weren't saved either
+        self.assertEqual(paper.status, FinalPaper.Status.GENERATED)
+        self.assertTrue(paper.is_generating)
+
+    def test_a_single_question_run_also_blocks_a_whole_paper_run(self):
+        paper = self.make_paper()
+        with mock.patch.object(ai.threading, "Thread"):
+            ai.start_question_regeneration(paper, 2, self.controller)
+        self.client.force_login(self.exam_controller)
+        self.assertContains(self.client.post(self.url(paper), {"_regenerate": "1"}, follow=True),
+                            "The AI is already writing this paper")
+
+    def test_a_slow_run_nobody_replaced_still_saves_its_result(self):
+        """The take-back must not punish a run that merely took longer than the timeout."""
+        paper = self.make_paper()
+        self.start(paper)
+        token = self.stall(paper)
+        with mock.patch.object(ai, "_ask_claude", return_value=self.stale_reply()):
+            ai.write_final_paper(paper.pk, self.controller.pk, token)
+        paper.refresh_from_db()
+        self.assertEqual(paper.questions.first().text, "Stale question 0?")
+        self.assertIsNone(paper.generation_started_at)
+        self.assertTrue(Notification.objects.filter(recipient=self.controller,
+                                                    title__startswith="Final paper ready").exists())
+
+    def test_locking_after_the_timeout_beats_the_stuck_runs_late_result(self):
+        paper = self.make_paper()
+        self.start(paper)
+        stuck = self.stall(paper)
+        self.client.force_login(self.exam_controller)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertContains(self.client.post(self.url(paper), {"_lock": "1"}, follow=True),
+                                "Locked. This is now the final paper.")
+        seen = Notification.objects.count()
+        with mock.patch.object(ai, "_ask_claude", return_value=self.stale_reply()):
+            ai.write_final_paper(paper.pk, self.controller.pk, stuck)
+        paper.refresh_from_db()
+        self.assertEqual(paper.status, FinalPaper.Status.LOCKED)
+        self.assertEqual(paper.questions.count(), 3)
+        self.assertFalse(paper.questions.filter(text__startswith="Stale question").exists())
+        self.assertFalse(any("ready" in n.title for n in Notification.objects.order_by("pk")[seen:]))
+
+    def test_lock_from_a_page_opened_before_someone_else_locked(self):
+        paper = self.make_paper()
+        with self.captureOnCommitCallbacks(execute=True):
+            workflow.lock_final(FinalPaper.objects.get(pk=paper.pk), self.controller)
+        self.client.force_login(self.exam_controller)
+        self.assertContains(self.client.post(self.url(paper), {"_lock": "1"}, follow=True),
+                            "This final paper is already locked.")
+        paper.refresh_from_db()
+        self.assertEqual(paper.locked_by, self.controller)  # the first lock stands
+
+    # ---------- confidentiality ----------
+
+    def test_an_involved_user_cannot_take_the_paper_back_by_saving(self):
+        paper = self.make_paper()
+        self.start(paper)
+        token = self.stall(paper)
+        QuestionBlueprint.objects.filter(pk=self.bp.pk).update(reviewed_by=self.exam_controller)
+        self.assertEqual(self.post_form(paper, self.exam_controller, text="Involved edit?").status_code, 404)
+        self.assertEqual(self.token_of(paper), token)  # the run keeps the paper
+        self.assertEqual(paper.questions.first().text, "Question 0?")
+
+    def test_teachers_and_hods_see_no_final_paper_page_at_all(self):
+        paper = self.make_paper()
+        teacher = get_user_model().objects.create_user("teach", password="Pw-12345!", is_staff=True)
+        teacher.groups.add(Group.objects.get(name="Teacher / Subject Expert"))
+        for user in (teacher, self.hod):
+            with self.subTest(user=user.username):
+                self.client.force_login(user)
+                for url in (self.url(paper),
+                            reverse("admin:questionbank_finalpaper_changelist"),
+                            reverse("admin:questionbank_final_print", args=[paper.pk]),
+                            reverse("admin:questionbank_final_export", args=[paper.pk, "pdf"])):
+                    self.assertEqual(self.client.get(url).status_code, 403, url)
+                self.assertEqual(self.client.post(self.url(paper), {"_regenerate": "1"}).status_code, 403)
+                self.assertNotContains(self.client.get(reverse("admin:index")), "final papers (confidential)")
+
+    @override_settings(AI_PROVIDER="gemini", AI_MODEL="", AI_FINAL_MODEL="", GEMINI_PAID_TIER=False)
+    def test_gemini_free_tier_still_refuses_after_a_timeout_take_back(self):
+        """Taking the paper back from a stuck run must not open a door around the paid-tier gate."""
+        from . import llm
+
+        paper = self.make_paper()
+        with self.settings(**AI_DEFAULTS):  # the run started while the server still used Anthropic
+            self.start(paper)
+        self.stall(paper)
+        self.assertEqual(self.post_form(paper, self.exam_controller, text="Taken back?").status_code, 302)
+        self.assertIsNone(self.token_of(paper))
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "ANTHROPIC_API_KEY": ""}):
+            with self.assertRaisesMessage(ai.GenerationError, "paid Gemini plan"):
+                ai.start_final_paper(self.bp, self.exam_controller)
+            with self.assertRaisesMessage(ai.GenerationError, "paid Gemini plan"):
+                ai.start_question_regeneration(paper, 1, self.exam_controller)
+            self.client.force_login(self.exam_controller)
+            with mock.patch.object(ai.threading, "Thread") as thread:
+                page = self.client.post(self.url(paper), {"_regenerate": "1"}, follow=True)
+            thread.assert_not_called()
+        self.assertContains(page, escape(llm.FINAL_NOT_ALLOWED))
+        self.assertIsNone(self.token_of(paper))
+
+    # ---------- edges ----------
+
+    def test_the_timeout_boundary_decides_whether_the_page_is_read_only(self):
+        paper = self.make_paper()
+        self.start(paper)
+        paper_admin, inline = self.paper_admin_and_inline()
+        request = SimpleNamespace(user=self.exam_controller)
+
+        FinalPaper.objects.filter(pk=paper.pk).update(
+            generation_started_at=timezone.now() - FinalPaper.GENERATION_TIMEOUT + timedelta(seconds=30))
+        paper.refresh_from_db()
+        self.assertTrue(paper.is_generating)
+        self.assertFalse(paper_admin.has_change_permission(request, paper))
+
+        FinalPaper.objects.filter(pk=paper.pk).update(
+            generation_started_at=timezone.now() - FinalPaper.GENERATION_TIMEOUT)
+        paper.refresh_from_db()
+        self.assertFalse(paper.is_generating)  # exactly at the timeout the run no longer holds the page
+        self.assertTrue(paper_admin.has_change_permission(request, paper))
+        self.assertTrue(inline.has_change_permission(request, paper))
+
+    def test_the_token_column_keeps_microseconds(self):
+        """The guard compares timestamps exactly, so the column must not round to whole seconds."""
+        paper = self.make_paper()
+        exact = timezone.now().replace(microsecond=123456)
+        FinalPaper.objects.filter(pk=paper.pk).update(generation_started_at=exact)
+        self.assertEqual(self.token_of(paper), exact)
+        self.assertEqual(self.token_of(paper).microsecond, 123456)
+
+    def test_a_token_a_microsecond_apart_does_not_own_the_paper(self):
+        paper = self.make_paper()
+        token = self.start(paper)
+        with mock.patch.object(ai, "_ask_claude", return_value=self.stale_reply()):
+            ai.write_final_paper(paper.pk, self.controller.pk, token + timedelta(microseconds=1))
+        paper.refresh_from_db()
+        self.assertFalse(paper.questions.filter(text__startswith="Stale question").exists())
+        self.assertEqual(self.token_of(paper), token)
+        self.assertTrue(paper.is_generating)
+
+    def test_a_paper_with_no_questions_can_be_opened_and_saved_but_not_locked(self):
+        paper = FinalPaper.objects.create(blueprint=self.bp)
+        self.client.force_login(self.exam_controller)
+        self.assertEqual(self.client.get(self.url(paper)).status_code, 200)
+        self.assertContains(self.client.post(self.url(paper), {"_lock": "1"}, follow=True),
+                            "Generate the paper before locking it.")
+        self.assertEqual(self.post_form(paper, self.exam_controller, notes="nothing yet").status_code, 302)
+        paper.refresh_from_db()
+        self.assertEqual(paper.controller_notes, "nothing yet")
+        self.assertIsNone(paper.generation_started_at)
+        self.assertEqual(paper.status, FinalPaper.Status.GENERATED)
+
+    def test_an_ordinary_save_writes_no_token_and_leaves_the_other_fields_alone(self):
+        paper = self.make_paper()
+        FinalPaper.objects.filter(pk=paper.pk).update(generation_error="an older failure",
+                                                      check_summary="All 3 questions passed.")
+        paper.refresh_from_db()
+        untouched = {f: getattr(paper, f) for f in ("status", "model_used", "generated_by_id", "generated_at",
+                                                    "check_summary", "generation_error", "locked_by_id",
+                                                    "locked_at")}
+        self.assertEqual(self.post_form(paper, self.exam_controller, notes="Looks fine",
+                                        text="Reworded question?").status_code, 302)
+        paper.refresh_from_db()
+        self.assertIsNone(paper.generation_started_at)
+        self.assertEqual(paper.controller_notes, "Looks fine")
+        self.assertEqual(paper.questions.first().text, "Reworded question?")
+        self.assertEqual(paper.questions.first().check_notes,
+                         "Edited after the automatic checks. Check it by hand.")
+        for field, value in untouched.items():
+            self.assertEqual(getattr(paper, field), value, field)
+
+    def test_bangla_question_text_survives_an_edit_and_a_take_back(self):
+        paper = self.make_paper()
+        bangla = "সালোকসংশ্লেষণ প্রক্রিয়ায় উদ্ভিদ কোন গ্যাস গ্রহণ করে?"
+        self.assertEqual(self.post_form(paper, self.exam_controller, text=bangla,
+                                        answer="কার্বন ডাই-অক্সাইড").status_code, 302)
+        first = paper.questions.first()
+        self.assertEqual((first.text, first.answer), (bangla, "কার্বন ডাই-অক্সাইড"))
+        self.assertContains(self.client.get(self.url(paper)), escape(bangla))
+
+        self.start(paper)
+        stuck = self.stall(paper)
+        self.assertEqual(self.post_form(paper, self.exam_controller, text=bangla + " (সংশোধিত)").status_code, 302)
+        with mock.patch.object(ai, "_ask_claude", return_value=self.stale_reply()):
+            ai.write_final_paper(paper.pk, self.controller.pk, stuck)
+        self.assertEqual(paper.questions.first().text, bangla + " (সংশোধিত)")
+
+
+@skipUnless(connection.vendor == "mysql",
+            "SQLite serialises writes, so only MySQL can show two generation runs racing for the paper.")
+@override_settings(MEDIA_ROOT=MEDIA, MAKE_WEBHOOK_URL="", MAKE_MAILHOOK_ADDRESS="", **AI_DEFAULTS)
+class ConcurrentFinalPaperClaimTests(TransactionTestCase):
+    """Two exam controllers press Generate at the same moment on two connections: the second waits for the
+    first one's row lock and is then refused, so exactly one run ever owns the paper."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.controller = User.objects.create_superuser("controller", "c@example.com", "Pw-12345!")
+        self.other = User.objects.create_superuser("controller2", "c2@example.com", "Pw-12345!")
+        hod = User.objects.create_user("hod", password="Pw-12345!", is_staff=True)
+        subject, grade = Subject.objects.create(name="Science"), Grade.objects.create(name="Class 8")
+        KnowledgeSource.objects.create(subject=subject, grade=grade, title="Book",
+                                       file=SimpleUploadedFile("book.txt", b"Plants make food."))
+        self.bp = QuestionBlueprint.objects.create(
+            title="Science mid-term", subject=subject, grade=grade, assigned_to=hod,
+            due_date=date(2026, 12, 1), status=QuestionBlueprint.Status.APPROVED)
+        BlueprintItem.objects.create(blueprint=self.bp, order=1, section="A", question_type="mcq", count=2,
+                                     marks_each=1)
+        self.paper = FinalPaper.objects.create(blueprint=self.bp)
+
+    def test_only_one_of_two_simultaneous_runs_claims_the_paper(self):
+        locked, release, outcome = threading.Event(), threading.Event(), {}
+
+        def first():
+            """Claims the paper and holds its transaction open, as a real run does while Claude answers."""
+            try:
+                with transaction.atomic():
+                    paper = FinalPaper.objects.select_for_update().get(pk=self.paper.pk)
+                    outcome["token"] = ai._claim(paper, self.controller)
+                    locked.set()
+                    release.wait(10)
+            except Exception as exc:
+                outcome["first_error"] = str(exc)
+            finally:
+                connection.close()
+
+        def second():
+            try:
+                with mock.patch.object(ai.threading, "Thread"):
+                    ai.start_final_paper(QuestionBlueprint.objects.get(pk=self.bp.pk), self.other)
+            except ai.GenerationError as exc:
+                outcome["second_error"] = str(exc)
+            finally:
+                connection.close()
+
+        a = threading.Thread(target=first)
+        a.start()
+        self.assertTrue(locked.wait(10), "the first run never got the lock")
+        b = threading.Thread(target=second)
+        b.start()
+        b.join(1.5)
+        waiting = b.is_alive()
+        release.set()
+        a.join(10)
+        b.join(30)
+        self.assertFalse(b.is_alive())
+
+        self.assertTrue(waiting, "the second run didn't wait for the row lock")
+        self.assertIsNone(outcome.get("first_error"))
+        self.assertEqual(outcome.get("second_error"),
+                         "The AI is already writing this paper. You'll get a notification when it's ready.")
+        stored = FinalPaper.objects.values_list("generation_started_at", flat=True).get(pk=self.paper.pk)
+        self.assertEqual(stored, outcome["token"])  # the loser wrote no token of its own
+        self.assertEqual(AuditEvent.objects.filter(action=AuditEvent.Action.FINAL_STARTED).count(), 0)
 
 
 class AIUsageTests(BlueprintTestCase):

@@ -159,23 +159,31 @@ def paper_problems(paper):
 
 @transaction.atomic
 def lock_final(paper, user):
-    if paper.status == FinalPaper.Status.LOCKED:
+    """Lock the copy that is in the database, not the one the page was rendered from: the row is read again
+    under select_for_update and every rule is re-checked on it, so a paper that changed while the page was open
+    (a generation run started, a question was deleted) is not locked by mistake and no stale field is written
+    back. Only the lock fields are saved."""
+    current = FinalPaper.objects.select_for_update().select_related("blueprint").get(pk=paper.pk)
+    if current.status == FinalPaper.Status.LOCKED:
         raise WorkflowError("This final paper is already locked.")
-    if paper.is_generating:
+    if current.is_generating:
         raise WorkflowError("The AI is still writing this paper. Lock it once it's ready.")
-    if not paper.questions.exists():
+    if not current.questions.exists():
         raise WorkflowError("Generate the paper before locking it.")
-    problems = paper_problems(paper)
+    problems = paper_problems(current)
     if problems:
         raise WorkflowError(" ".join(problems) + " Fix these, then lock.")
-    paper.status = FinalPaper.Status.LOCKED
-    paper.locked_by, paper.locked_at = user, timezone.now()
-    paper.save()
-    record(user, Action.FINAL_LOCKED, paper)
-    bp = paper.blueprint
+    current.status = FinalPaper.Status.LOCKED
+    current.locked_by, current.locked_at = user, timezone.now()
+    current.save(update_fields=["status", "locked_by", "locked_at"])
+    # Keep the caller's copy in step, so it doesn't look unlocked afterwards.
+    paper.status, paper.locked_by, paper.locked_at = current.status, current.locked_by, current.locked_at
+    record(user, Action.FINAL_LOCKED, current)
+    bp = current.blueprint
     bp.status = Status.FINALIZED
     bp.save(update_fields=["status", "updated_at"])
-    # Teachers and HODs learn that it's done, nothing more.
-    notify([bp.assigned_to, bp.reviewed_by], f"Final paper prepared: {bp.title}",
-           body="The exam controller has finalized the paper. Its questions stay confidential.",
-           url=_url(bp), kind=Notification.Kind.SUCCESS, exclude=user)
+    # Teachers and HODs learn that it's done, nothing more — and only once the lock really went through.
+    transaction.on_commit(lambda: notify(
+        [bp.assigned_to, bp.reviewed_by], f"Final paper prepared: {bp.title}",
+        body="The exam controller has finalized the paper. Its questions stay confidential.",
+        url=_url(bp), kind=Notification.Kind.SUCCESS, exclude=user), robust=True)
