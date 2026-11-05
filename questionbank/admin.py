@@ -3,6 +3,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.http import Http404, HttpResponse, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, redirect
@@ -553,8 +554,9 @@ class FinalQuestionInline(admin.StackedInline):
     readonly_fields = ("check_notes",)
 
     def _editable(self, request, obj):
+        # Not while the AI writes: its result replaces these questions, so an edit now would be lost.
         return (obj is not None and workflow.can_open_final(request.user, obj.blueprint)
-                and obj.status != FinalPaper.Status.LOCKED)
+                and obj.status != FinalPaper.Status.LOCKED and not obj.is_generating)
 
     def has_view_permission(self, request, obj=None):
         return can_manage_final(request.user) if obj is None else workflow.can_open_final(request.user, obj.blueprint)
@@ -587,9 +589,33 @@ class FinalPaperAdmin(admin.ModelAdmin):
     CHECKED_FIELDS = {"text", "options", "answer"}
     EDITED_NOTE = "Edited after the automatic checks. Check it by hand."
     ADDED_NOTE = "Added by hand after the automatic checks. Check it by hand."
+    GENERATING_MESSAGE = "The AI is writing this paper. You can edit it once it's ready."
+
+    def _take_back_from_timed_out_run(self, obj):
+        """A controller saving the paper takes it back from a generation run that outlived the 15-minute
+        timeout. While a run is inside the timeout the page is read-only, so this can only fire for a run the
+        page already declared abandoned. Clearing its token means its late result is discarded with
+        STALE_RUN_MESSAGE instead of replacing the edits being saved here."""
+        if obj.pk is None:
+            return
+        # Same transaction as the admin's save (atomic() nests as a savepoint), and the row is locked, so the
+        # clear and the save see one state.
+        with transaction.atomic():
+            current = FinalPaper.objects.select_for_update().only("generation_started_at").get(pk=obj.pk)
+            if current.generation_started_at is None:
+                return  # the ordinary case: nothing is running, nothing to clear
+            current.generation_started_at = None
+            current.save(update_fields=["generation_started_at"])
+        obj.generation_started_at = None
+
+    def save_model(self, request, obj, form, change):
+        self._take_back_from_timed_out_run(obj)
+        super().save_model(request, obj, form, change)
 
     def save_formset(self, request, form, formset, change):
         if formset.model is FinalQuestion:
+            # The admin always calls save_model first; this keeps the questions safe if it ever doesn't.
+            self._take_back_from_timed_out_run(form.instance)
             for f in formset.forms:
                 if not f.has_changed() or f in formset.deleted_forms:
                     continue
@@ -612,7 +638,10 @@ class FinalPaperAdmin(admin.ModelAdmin):
     def has_change_permission(self, request, obj=None):
         if obj is None:
             return can_manage_final(request.user)
-        return workflow.can_open_final(request.user, obj.blueprint) and obj.status != FinalPaper.Status.LOCKED
+        # While the AI writes, the page is read-only: its result replaces the questions, so edits made now
+        # would be overwritten. Viewing stays allowed.
+        return (workflow.can_open_final(request.user, obj.blueprint) and obj.status != FinalPaper.Status.LOCKED
+                and not obj.is_generating)
 
     def has_add_permission(self, request):
         return False  # created from an approved blueprint
@@ -662,6 +691,13 @@ class FinalPaperAdmin(admin.ModelAdmin):
             except (workflow.WorkflowError, GenerationError) as exc:
                 self.message_user(request, str(exc), messages.ERROR)
             return HttpResponseRedirect(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
+        if request.method == "POST" and object_id:
+            # A plain save of the form or the questions formset while the AI writes: refuse it in words
+            # instead of the bare 403 the read-only permission would give.
+            paper = get_object_or_404(self.get_queryset(request), pk=object_id)
+            if paper.is_generating:
+                self.message_user(request, self.GENERATING_MESSAGE, messages.ERROR)
+                return HttpResponseRedirect(reverse("admin:questionbank_finalpaper_change", args=[paper.pk]))
         final = self.get_object(request, object_id) if object_id else None
         extra_context = {**(extra_context or {}), "final": final, "claude": claude_status(),
                          "paper_problems": workflow.paper_problems(final) if final else []}

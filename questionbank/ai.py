@@ -349,8 +349,22 @@ def _final_fields(q):
     }
 
 
-def generate_final_paper(blueprint, user):
-    """Write (or rewrite) the confidential final paper for an approved blueprint. Returns the FinalPaper."""
+STALE_RUN_MESSAGE = "A newer request replaced this one; its result was not saved."
+
+
+def _check_owns_run(paper, token):
+    """A generation run owns the paper only while generation_started_at still holds the value its _claim wrote.
+    If a newer run (or a cancellation) replaced it, this run's result is thrown away instead of overwriting work
+    the exam controller is already looking at. Call on a row read with select_for_update."""
+    if token is not None and paper.generation_started_at != token:
+        raise GenerationError(STALE_RUN_MESSAGE)
+
+
+def generate_final_paper(blueprint, user, token=None):
+    """Write (or rewrite) the confidential final paper for an approved blueprint. Returns the FinalPaper.
+
+    token is the generation_started_at value of the background run asking for this; the result is only saved
+    while the paper still carries it (None means a direct call that owns the paper by itself)."""
     from django.db import transaction
     from django.utils import timezone
 
@@ -379,6 +393,7 @@ def generate_final_paper(blueprint, user):
         paper, _ = FinalPaper.objects.select_for_update().get_or_create(blueprint=blueprint)
         if paper.status == FinalPaper.Status.LOCKED:
             raise GenerationError("This final paper is locked and can't be regenerated.")
+        _check_owns_run(paper, token)
         paper.questions.all().delete()
         FinalQuestion.objects.bulk_create([
             FinalQuestion(
@@ -473,9 +488,11 @@ def check_final_questions(questions, items, documents, user=None):
 REGENERATED_NOTE = "Regenerated on its own; the AI review of syllabus fit and answers didn't check it. Check it by hand."
 
 
-def regenerate_final_question(paper, order, user):
+def regenerate_final_question(paper, order, user, token=None):
     """Replace one question of an unlocked final paper with a new one for the same blueprint slot. Cheaper and
-    faster than regenerating the whole paper, and keeps the exam controller's edits to the others."""
+    faster than regenerating the whole paper, and keeps the exam controller's edits to the others.
+
+    token works as in generate_final_paper: a late result of a replaced run is discarded."""
     from django.db import transaction
 
     from .models import FinalPaper, FinalQuestion
@@ -534,6 +551,7 @@ def regenerate_final_question(paper, order, user):
         current = FinalPaper.objects.select_for_update().get(pk=paper.pk)
         if current.status == FinalPaper.Status.LOCKED:
             raise GenerationError("This final paper is locked and can't be regenerated.")
+        _check_owns_run(current, token)
         FinalQuestion.objects.filter(pk=target.pk).update(
             section=slot.section, question_type=slot.question_type, marks=slot.marks,
             check_notes="\n".join(notes), **_final_fields(reply))
@@ -541,7 +559,9 @@ def regenerate_final_question(paper, order, user):
 
 
 def _claim(paper, user):
-    """Mark the paper as being written. Call inside a transaction holding select_for_update on the paper."""
+    """Mark the paper as being written and return this run's token (the stored generation_started_at value,
+    read back from the database so the background job compares exactly what MySQL kept).
+    Call inside a transaction holding select_for_update on the paper."""
     from django.utils import timezone
 
     from .models import FinalPaper
@@ -559,6 +579,8 @@ def _claim(paper, user):
         raise GenerationError("The AI is already writing this paper. You'll get a notification when it's ready.")
     paper.generation_started_at, paper.generation_error = timezone.now(), ""
     paper.save(update_fields=["generation_started_at", "generation_error"])
+    paper.refresh_from_db(fields=["generation_started_at"])
+    return paper.generation_started_at
 
 
 def start_final_paper(blueprint, user):
@@ -570,9 +592,9 @@ def start_final_paper(blueprint, user):
 
     with transaction.atomic():
         paper, _ = FinalPaper.objects.select_for_update().get_or_create(blueprint=blueprint)
-        _claim(paper, user)
+        token = _claim(paper, user)
     record(user, Action.FINAL_STARTED, paper)
-    threading.Thread(target=_in_thread, args=(write_final_paper, paper.pk, user.pk), daemon=True).start()
+    threading.Thread(target=_in_thread, args=(write_final_paper, paper.pk, user.pk, token), daemon=True).start()
     return paper
 
 
@@ -585,9 +607,9 @@ def start_question_regeneration(paper, order, user):
 
     with transaction.atomic():
         paper = FinalPaper.objects.select_for_update().get(pk=paper.pk)
-        _claim(paper, user)
+        token = _claim(paper, user)
     record(user, Action.FINAL_STARTED, paper, details=f"Regenerating question {order}")
-    threading.Thread(target=_in_thread, args=(rewrite_final_question, paper.pk, order, user.pk),
+    threading.Thread(target=_in_thread, args=(rewrite_final_question, paper.pk, order, user.pk, token),
                      daemon=True).start()
     return paper
 
@@ -601,9 +623,13 @@ def _in_thread(func, *args):
         connection.close()  # each thread has its own database connection
 
 
-def _run_and_report(paper_pk, user_pk, job, label):
-    """The background part: run job(paper, user), record the outcome and notify the user.
-    label names what was written in the notification, e.g. "Final paper" or "Question 3"."""
+def _run_and_report(paper_pk, user_pk, job, label, token):
+    """The background part: run job(paper, user, token), record the outcome and notify the user.
+    label names what was written in the notification, e.g. "Final paper" or "Question 3".
+
+    token identifies this run (see _claim). The "being written" flag and the last error are only touched while
+    the paper still carries it, so a slow run that finished after the 15-minute timeout can't clear the flag of
+    the newer run that replaced it. The user who asked is told either way."""
     from django.contrib.auth import get_user_model
     from django.urls import reverse
 
@@ -614,15 +640,18 @@ def _run_and_report(paper_pk, user_pk, job, label):
 
     paper = FinalPaper.objects.select_related("blueprint").get(pk=paper_pk)
     user = get_user_model().objects.get(pk=user_pk)
+    if token is None:  # a direct call (tests, management): it owns whatever run is current
+        token = paper.generation_started_at
     try:
-        job(paper, user)
+        job(paper, user, token)
         error = ""
     except GenerationError as exc:
         error = str(exc)
     except Exception:
         logger.exception("%s generation failed for blueprint %s", label, paper.blueprint_id)
         error = "Something went wrong while writing the paper. Please try again."
-    FinalPaper.objects.filter(pk=paper_pk).update(generation_started_at=None, generation_error=error)
+    FinalPaper.objects.filter(pk=paper_pk, generation_started_at=token).update(generation_started_at=None,
+                                                                               generation_error=error)
     record(user, Action.FINAL_FAILED if error else Action.FINAL_GENERATED, paper,
            details=error or ("" if label == "Final paper" else label))
     url = reverse("admin:questionbank_finalpaper_change", args=[paper_pk])
@@ -634,13 +663,15 @@ def _run_and_report(paper_pk, user_pk, job, label):
                url=url, kind=Notification.Kind.SUCCESS)
 
 
-def write_final_paper(paper_pk, user_pk):
+def write_final_paper(paper_pk, user_pk, token=None):
     """The background part of start_final_paper."""
-    _run_and_report(paper_pk, user_pk, lambda paper, user: generate_final_paper(paper.blueprint, user),
-                    "Final paper")
+    _run_and_report(paper_pk, user_pk,
+                    lambda paper, user, token: generate_final_paper(paper.blueprint, user, token),
+                    "Final paper", token)
 
 
-def rewrite_final_question(paper_pk, order, user_pk):
+def rewrite_final_question(paper_pk, order, user_pk, token=None):
     """The background part of start_question_regeneration."""
-    _run_and_report(paper_pk, user_pk, lambda paper, user: regenerate_final_question(paper, order, user),
-                    f"Question {order}")
+    _run_and_report(paper_pk, user_pk,
+                    lambda paper, user, token: regenerate_final_question(paper, order, user, token),
+                    f"Question {order}", token)
