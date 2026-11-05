@@ -1,0 +1,169 @@
+/* Holiday add/change form — Outlook calendar event style */
+
+.holiday-form-wrap {
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Title bar (like Outlook's event title) */
+.hf-title-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 0 18px;
+  border-bottom: 2px solid var(--hairline-color);
+  margin-bottom: 24px;
+}
+.hf-title-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: var(--sts-brand-50);
+  color: var(--sts-brand-600);
+  flex: none;
+}
+.hf-title-icon svg { width: 22px; height: 22px; }
+
+.hf-title-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--body-loud-color);
+  padding: 0;
+  font-family: inherit;
+  min-width: 0;
+}
+.hf-title-input::placeholder { color: var(--body-quiet-color); font-weight: 500; }
+.hf-title-input:focus { outline: none; }
+.hf-title-label { display: none; }
+
+/* Card body */
+.hf-card {
+  border: 1px solid var(--hairline-color);
+  border-radius: var(--sts-radius);
+  background: var(--sts-surface);
+  box-shadow: var(--sts-shadow);
+  overflow: hidden;
+}
+
+/* Row inside card */
+.hf-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--hairline-color);
+}
+.hf-row:last-child { border-bottom: 0; }
+
+.hf-row-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--darkened-bg);
+  color: var(--body-quiet-color);
+  flex: none;
+  margin-top: 2px;
+}
+.hf-row-icon svg { width: 16px; height: 16px; }
+
+.hf-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.hf-row-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--body-quiet-color);
+}
+
+/* Date input styled like a pill / chip */
+.hf-date-wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hf-date-input {
+  padding: 8px 14px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--body-bg);
+  color: var(--body-fg);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.hf-date-input:focus {
+  outline: none;
+  border-color: var(--sts-brand-500);
+  box-shadow: 0 0 0 3px var(--sts-ring);
+}
+
+.hf-quick-dates { display: flex; gap: 6px; flex-wrap: wrap; }
+.hf-quick-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--hairline-color);
+  border-radius: 999px;
+  background: var(--darkened-bg);
+  color: var(--body-medium-color);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s;
+}
+.hf-quick-btn:hover { background: var(--sts-brand-50); border-color: var(--sts-brand-200); color: var(--sts-brand-700); }
+
+/* Error messages */
+.hf-errors { margin: 0 0 16px; padding: 10px 14px; border-radius: 10px; background: var(--message-error-bg); color: var(--error-fg); font-size: 13px; list-style: none; }
+.hf-errors li { list-style: none; }
+
+/* Toolbar (Save buttons) */
+.hf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 0 0;
+  flex-wrap: wrap;
+}
+.hf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 0.15s, transform 0.1s;
+}
+.hf-btn:active { transform: scale(0.98); }
+.hf-btn--primary { background: var(--sts-brand-600); color: #fff; }
+.hf-btn--primary:hover { background: var(--sts-brand-700); color: #fff; text-decoration: none; }
+.hf-btn--secondary { background: var(--darkened-bg); color: var(--body-medium-color); border: 1px solid var(--hairline-color); }
+.hf-btn--secondary:hover { background: var(--border-color); color: var(--body-loud-color); text-decoration: none; }
+.hf-btn--ghost { background: transparent; color: var(--body-quiet-color); padding-left: 8px; }
+.hf-btn--ghost:hover { color: var(--error-fg); }
+.hf-btn svg { width: 15px; height: 15px; }
+.hf-btn:focus-visible { outline: 2px solid var(--sts-brand-500); outline-offset: 2px; }
+
+.hf-toolbar-spacer { flex: 1; }
+
+@media (max-width: 540px) {
+  .hf-toolbar { flex-direction: column; align-items: stretch; }
+  .hf-toolbar-spacer { display: none; }
+  .hf-btn--ghost { order: 10; text-align: center; }
+}
