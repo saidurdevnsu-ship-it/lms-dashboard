@@ -1,7 +1,8 @@
 # Business requirements
 
-Condensed from the product spec `C:\Users\User\Desktop\Plan.docx` ("Plan - spec for development: phase 1") and the
-current implementation plan in `.hermes/plans/`. When the spec and the decisions below disagree, the decisions win.
+Condensed from the original product spec ("Plan - spec for development: phase 1") and the current implementation
+plan in `.hermes/plans/`. The original spec document is not committed; this file is the authoritative reference.
+When anything here conflicts with actual code or decisions in `docs/decisions/`, the decisions win.
 
 ## Goal
 

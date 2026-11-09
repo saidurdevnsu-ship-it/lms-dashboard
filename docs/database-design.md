@@ -3,6 +3,41 @@
 Derived from the `models.py` files. `learning` has no models. Users and roles are Django's `auth.User` and
 `auth.Group` (shown as "roles").
 
+## Entity-relationship overview
+
+```mermaid
+erDiagram
+    User ||--o{ SubjectAssignment : assigned_to
+    Subject ||--o{ SubjectAssignment : scope
+    Grade ||--o{ SubjectAssignment : applies_to
+
+    Subject ||--o{ KnowledgeSource : categorizes
+    Grade ||--o{ KnowledgeSource : targets
+
+    Subject ||--o{ Question : classifies
+    Grade ||--o{ Question : benchmarks
+    Question ||--o| Question : duplicate_of
+
+    AcademicEvent ||--o{ QuestionBlueprint : schedules
+    User ||--o{ QuestionBlueprint : authors
+    KnowledgeSource }o--o{ QuestionBlueprint : includes
+    QuestionBlueprint ||--|{ BlueprintItem : defines
+
+    QuestionBlueprint ||--o| FinalPaper : generates
+    FinalPaper ||--|{ FinalQuestion : contains
+
+    Department ||--o{ Employee : employs
+    Designation ||--o{ Employee : designates
+    User ||--|| Employee : identifies
+    Employee ||--o{ Employee : reports_to
+    Employee ||--o{ Attendance : logs
+    Employee ||--o{ LeaveRequest : requests
+    LeaveType ||--o{ LeaveRequest : specifies
+
+    User ||--o{ Notification : receives
+    User ||--o{ AuditEvent : initiates
+```
+
 ## questionbank
 
 | Model | Key fields / relations | Constraints, notes |

@@ -1,6 +1,6 @@
 # Architecture
 
-"STS Pulse": a Django 6.1 school LMS + HR system for STS Group. There is no separate frontend: everything runs inside
+"STS LMS": a Django 6.1 school LMS + HR system for STS Group. There is no separate frontend: everything runs inside
 **Django admin**, customised with overridden templates in `templates/admin/`, custom admin views (via `get_urls`) and
 the CSS in `static/css/admin-*.css` (plus `login.css`, `print-doc.css`, `punch.css`). Time zone `Asia/Dhaka`;
 content can be English or Bangla.
